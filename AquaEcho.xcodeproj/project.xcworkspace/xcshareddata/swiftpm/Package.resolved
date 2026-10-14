@@ -1,0 +1,15 @@
+{
+  "originHash" : "af9a96cdb3c88004a978458f448c5842ab2f0768baa57f85e08e16f33371d187",
+  "pins" : [
+    {
+      "identity" : "ggwave-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ggerganov/ggwave-spm",
+      "state" : {
+        "branch" : "master",
+        "revision" : "03b109f78551b4cd0db1145812a7d962d7eceba0"
+      }
+    }
+  ],
+  "version" : 3
+}
