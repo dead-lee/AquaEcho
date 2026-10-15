@@ -45,6 +45,14 @@ final class RunLog {
         queue.sync { lines.joined(separator: "\n") }
     }
 
+    /// 清掉内存里的日志，避免下一次写入把已删除的内容写回去。
+    func discardBufferedLines() {
+        queue.sync {
+            lines.removeAll()
+            recentMessages.removeAll()
+        }
+    }
+
     static func documentFiles(prefixes: [String] = ["AquaEcho_Log_", "AquaEcho_Results_"]) -> [URL] {
         let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []

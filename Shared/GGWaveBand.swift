@@ -22,7 +22,7 @@ enum GGWaveBand {
     static func band(startHz: Double, toneCount: Int = 6) -> (low: Double, high: Double, bin: Int) {
         let bin = bin(forHz: startHz)
         let low = hz(forBin: bin)
-        let high = low + toneSpacingHz * Double(max(toneCount - 1, 0))
+        let high = low + 1000
         return (low, high, bin)
     }
 }

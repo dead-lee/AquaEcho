@@ -43,7 +43,15 @@ final class WatchModel: ObservableObject {
         link.activate()
         outputVolume = player.outputVolume
         log("手表端启动")
+        WatchActivation.onDidBecomeActive = { [weak self] in
+            self?.startExtendedRuntimeAfterBecomeActive()
+        }
+    }
+
+    func startExtendedRuntimeAfterBecomeActive() {
+        log("延长运行已在 applicationDidBecomeActive 后启动")
         foreground.startIfNeeded()
+        foregroundStatus = foreground.status
     }
 
     func noteScenePhase(_ phase: ScenePhase) {
@@ -101,11 +109,9 @@ final class WatchModel: ObservableObject {
             try player.prepare()
             let volume = AVAudioSession.sharedInstance().outputVolume
             outputVolume = volume
+            log(String(format: "音量 outputVolume=%.2f", locale: Locale(identifier: "en_US_POSIX"), volume))
             if volume < 0.95 {
                 status = "音量不足，请旋转数码表冠调到最大"
-                log(status)
-                player.stop()
-                throw VolumeTooLowError()
             }
             foreground.ensureRunning()
             log("开始发送 \(config.mode.title)，\(config.plannedPairs().count) 组，重复 \(config.repeats) 次")
@@ -151,8 +157,6 @@ final class WatchModel: ObservableObject {
                 status = "发送完成"
                 log("发送完成，共 \(sent.count) 包")
             }
-        } catch is VolumeTooLowError {
-            status = "音量不足，请旋转数码表冠调到最大"
         } catch {
             status = error.localizedDescription
             log("错误 \(error.localizedDescription)")
@@ -233,4 +237,7 @@ final class WatchModel: ObservableObject {
     }
 }
 
-private struct VolumeTooLowError: Error {}
+@MainActor
+enum WatchActivation {
+    static var onDidBecomeActive: (() -> Void)?
+}

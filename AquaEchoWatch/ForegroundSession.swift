@@ -37,9 +37,7 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
 
     func noteScenePhase(_ phase: ScenePhase) {
         switch phase {
-        case .active:
-            startIfNeeded()
-        case .inactive, .background:
+        case .active, .inactive, .background:
             break
         @unknown default:
             break

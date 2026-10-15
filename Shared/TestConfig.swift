@@ -41,10 +41,19 @@ struct TestConfig: Codable, Equatable {
     /// ggwave 编码音量。库作者建议不要超过 50，否则多音叠加会削波。
     var ggwaveVolume: Int = 50
 
+    /// ggwave 的默认扫描范围。界面输入也限制在这一段。
+    static let ggwaveFreqMinHz = 15_000.0
+    static let ggwaveFreqMaxHz = 16_000.0
+
     var normalized: TestConfig {
         var copy = self
-        copy.freqMinHz = copy.freqMinHz.clamped(to: 1_000...22_000)
-        copy.freqMaxHz = copy.freqMaxHz.clamped(to: 1_000...22_000)
+        if copy.mode == .ggwave {
+            copy.freqMinHz = copy.freqMinHz.clamped(to: Self.ggwaveFreqMinHz...Self.ggwaveFreqMaxHz)
+            copy.freqMaxHz = copy.freqMaxHz.clamped(to: Self.ggwaveFreqMinHz...Self.ggwaveFreqMaxHz)
+        } else {
+            copy.freqMinHz = copy.freqMinHz.clamped(to: 1_000...22_000)
+            copy.freqMaxHz = copy.freqMaxHz.clamped(to: 1_000...22_000)
+        }
         if copy.freqMaxHz < copy.freqMinHz {
             swap(&copy.freqMinHz, &copy.freqMaxHz)
         }

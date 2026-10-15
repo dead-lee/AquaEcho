@@ -202,8 +202,13 @@ struct ConfigScreen: View {
                     }
                 }
                 Section("扫描") {
-                    numberField("下限 Hz", value: $model.config.freqMinHz)
-                    numberField("上限 Hz", value: $model.config.freqMaxHz)
+                    if model.config.mode == .ggwave {
+                        numberField("下限 Hz", value: $model.config.freqMinHz, range: TestConfig.ggwaveFreqMinHz...TestConfig.ggwaveFreqMaxHz)
+                        numberField("上限 Hz", value: $model.config.freqMaxHz, range: TestConfig.ggwaveFreqMinHz...TestConfig.ggwaveFreqMaxHz)
+                    } else {
+                        numberField("下限 Hz", value: $model.config.freqMinHz)
+                        numberField("上限 Hz", value: $model.config.freqMaxHz)
+                    }
                     numberField("步进 Hz", value: $model.config.stepHz)
                     if model.config.mode == .cpfsk {
                         numberField("频率间隔 Hz", value: $model.config.pairSeparationHz)
@@ -239,12 +244,28 @@ struct ConfigScreen: View {
                 }
             }
             .navigationTitle("配置")
+            .onChange(of: model.config.mode) { _, mode in
+                guard mode == .ggwave else { return }
+                model.config.freqMinHz = Self.limited(model.config.freqMinHz)
+                model.config.freqMaxHz = Self.limited(model.config.freqMaxHz)
+            }
         }
     }
 
-    private func numberField(_ title: String, value: Binding<Double>) -> some View {
+    private func numberField(_ title: String, value: Binding<Double>, range: ClosedRange<Double>? = nil) -> some View {
         TextField(title, value: value, format: .number.precision(.fractionLength(0...1)))
             .keyboardType(.decimalPad)
+            .onChange(of: value.wrappedValue) { _, newValue in
+                guard let range else { return }
+                let clamped = min(range.upperBound, max(range.lowerBound, newValue))
+                if clamped != newValue {
+                    value.wrappedValue = clamped
+                }
+            }
+    }
+
+    private static func limited(_ hz: Double) -> Double {
+        min(TestConfig.ggwaveFreqMaxHz, max(TestConfig.ggwaveFreqMinHz, hz))
     }
 }
 
@@ -279,6 +300,10 @@ struct LogScreen: View {
                                 Text("导出")
                             }
                         }
+                    }
+                    Button("一键清理", role: .destructive) { model.clearResultFiles() }
+                    if let message = model.cleanupMessage {
+                        Text(message)
                     }
                     Text("文件在 App 的 Documents 目录。用数据线连上 Mac 后，在访达侧边栏打开这台 iPhone 里的 AquaEcho；或在「文件」App 的「我的 iPhone」里查看。")
                         .font(.footnote)

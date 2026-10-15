@@ -15,6 +15,7 @@ final class PhoneModel: ObservableObject {
     @Published var expectedCount = 0
     @Published var logText = ""
     @Published var logURL: URL?
+    @Published var cleanupMessage: String?
 
     private let capture = AudioCapture()
     private let link = PhoneLink()
@@ -216,6 +217,23 @@ final class PhoneModel: ObservableObject {
             status = "评分完成。"
             log("错误 \(lastError ?? "")")
         }
+    }
+
+    func clearResultFiles() {
+        let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+        for url in urls {
+            let name = url.lastPathComponent
+            let csv = name.hasPrefix("AquaEcho_Results_") && name.hasSuffix(".csv")
+            let logFile = name.hasPrefix("AquaEcho_Log_") && name.hasSuffix(".txt")
+            if csv || logFile {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        csvURL = nil
+        RunLog.shared.discardBufferedLines()
+        logText = ""
+        cleanupMessage = "已清理 CSV 和日志"
     }
 
     private func log(_ message: String) {
