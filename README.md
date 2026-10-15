@@ -63,7 +63,7 @@ CPFSK 默认扫描 15.0–20.0 kHz，步进 500 Hz，两个音至少相隔 1 kHz
 
 与 CSV 使用同一个 Documents 目录。iPhone 的 `Info.plist` 已设置 `UIFileSharingEnabled = YES` 和 `LSSupportsOpeningDocumentsInPlace = YES`。
 
-关键事件都写入该文件：开始发送、停止发送、当前频率对、发送时间戳、音量 `outputVolume=0.xx`、错误信息。日志只写在 Documents 里。手表端不提供日志查看界面。iPhone 上的同一份事件仍经 Watch Connectivity 写入手机 Documents，可在「日志」页、访达或「文件」App 里看。日志页列出 Documents 里的文件，并在这一栏放「一键清理」。它删除所有 `AquaEcho_Results_` 开头的 `.csv` 和所有 `AquaEcho_Log_` 开头的 `.txt`，完成后界面显示「已清理 CSV 和日志」。
+关键事件都写入该文件：开始发送、停止发送、当前频率对、发送时间戳、音量 `outputVolume=0.xx`、错误信息。日志只写在 Documents 里。发送循环里的日志先写入手表本地文件和内存数组 `pendingLogs`，不在循环内通过 Watch Connectivity 发送，避免打断播放节奏。状态变为「发送完成」或「已停止」之后，再一次性把这批日志发给 iPhone。手表端不提供日志查看界面。iPhone 上可在「日志」页、访达或「文件」App 里看。日志页列出 Documents 里的文件，并在这一栏放「一键清理」。它删除所有 `AquaEcho_Results_` 开头的 `.csv` 和所有 `AquaEcho_Log_` 开头的 `.txt`，完成后界面显示「已清理 CSV 和日志」。
 
 每一行是一次发送，包含频率对、随机包的十六进制、序号、Watch 发送时间、iPhone 接收时间、平均信噪比、变异系数、双频能量比、ggwave 解码成功率（CPFSK 留空）、四项得分和总分。时间是各自设备的本地时间，并带时区偏移；旁边还有 Unix 毫秒，方便事后对位。
 

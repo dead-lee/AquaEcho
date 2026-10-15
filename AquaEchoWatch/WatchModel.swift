@@ -19,6 +19,8 @@ final class WatchModel: ObservableObject {
     private var playing = false
     private var pendingLogs: [String] = []
     private var flushingLogs = false
+    /// 发送循环进行中时为 true：日志只进本地文件和 pendingLogs，不经 Watch Connectivity 发出。
+    private var holdLogSync = false
 
     init() {
         config = ConfigStore.load()
@@ -99,6 +101,14 @@ final class WatchModel: ObservableObject {
     }
 
     private func run() async {
+        holdLogSync = true
+        defer {
+            holdLogSync = false
+            flushLogs()
+            if !pendingLogs.isEmpty {
+                retryLogFlush()
+            }
+        }
         playing = true
         isRunning = true
         stopRequested = false
@@ -172,15 +182,16 @@ final class WatchModel: ObservableObject {
         let line = "[Watch] \(message)"
         RunLog.shared.append(line)
         pendingLogs.append(line)
+        foregroundStatus = foreground.status
+        guard !holdLogSync else { return }
         flushLogs()
         if !pendingLogs.isEmpty {
             retryLogFlush()
         }
-        foregroundStatus = foreground.status
     }
 
     private func flushLogs() {
-        guard !pendingLogs.isEmpty else { return }
+        guard !holdLogSync, !pendingLogs.isEmpty else { return }
         let batch = pendingLogs.joined(separator: "\n")
         if link.send(WCEnvelope(kind: .log, log: batch)) {
             pendingLogs = []
@@ -188,16 +199,17 @@ final class WatchModel: ObservableObject {
     }
 
     private func retryLogFlush() {
-        guard !flushingLogs else { return }
+        guard !holdLogSync, !flushingLogs else { return }
         flushingLogs = true
         Task { @MainActor in
             for _ in 0..<20 {
-                if pendingLogs.isEmpty { break }
+                if holdLogSync || pendingLogs.isEmpty { break }
                 try? await Task.sleep(nanoseconds: 300_000_000)
+                if holdLogSync { break }
                 flushLogs()
             }
             flushingLogs = false
-            if !pendingLogs.isEmpty {
+            if !holdLogSync, !pendingLogs.isEmpty {
                 retryLogFlush()
             }
         }
