@@ -18,53 +18,34 @@ func expectEqual<T: Equatable>(_ actual: T, _ expected: T, _ message: String) {
 
 // MARK: - 评分边界
 
-expectEqual(ChannelScore.snrPoints(25), 45, "snr 25")
-expectEqual(ChannelScore.snrPoints(24.999), 35, "snr just under 25")
-expectEqual(ChannelScore.snrPoints(20), 35, "snr 20")
-expectEqual(ChannelScore.snrPoints(15), 25, "snr 15")
-expectEqual(ChannelScore.snrPoints(10), 15, "snr 10")
-expectEqual(ChannelScore.snrPoints(5), 5, "snr 5")
+expectEqual(ChannelScore.snrPoints(25), 40, "snr 25")
+expectEqual(ChannelScore.snrPoints(24.999), 32, "snr just under 25")
+expectEqual(ChannelScore.snrPoints(20), 32, "snr 20")
+expectEqual(ChannelScore.snrPoints(15), 24, "snr 15")
+expectEqual(ChannelScore.snrPoints(10), 16, "snr 10")
+expectEqual(ChannelScore.snrPoints(5), 8, "snr 5")
 expectEqual(ChannelScore.snrPoints(4.999), 0, "snr under 5")
 
-expectEqual(ChannelScore.stabilityPoints(coefficientOfVariation: 0.099), 20, "cv under 10%")
-expectEqual(ChannelScore.stabilityPoints(coefficientOfVariation: 0.10), 15, "cv 10%")
-expectEqual(ChannelScore.stabilityPoints(coefficientOfVariation: 0.199), 15, "cv under 20%")
-expectEqual(ChannelScore.stabilityPoints(coefficientOfVariation: 0.20), 8, "cv 20%")
-expectEqual(ChannelScore.stabilityPoints(coefficientOfVariation: 0.30), 8, "cv 30%")
-expectEqual(ChannelScore.stabilityPoints(coefficientOfVariation: 0.3001), 0, "cv over 30%")
-
-expectEqual(ChannelScore.separationPoints(ratioDB: 6), 15, "ratio 6")
-expectEqual(ChannelScore.separationPoints(ratioDB: 3), 10, "ratio 3")
-expectEqual(ChannelScore.separationPoints(ratioDB: 1), 5, "ratio 1")
+expectEqual(ChannelScore.separationPoints(ratioDB: 6), 20, "ratio 6")
+expectEqual(ChannelScore.separationPoints(ratioDB: 5.999), 12, "ratio just under 6")
+expectEqual(ChannelScore.separationPoints(ratioDB: 3), 12, "ratio 3")
+expectEqual(ChannelScore.separationPoints(ratioDB: 1), 6, "ratio 1")
 expectEqual(ChannelScore.separationPoints(ratioDB: 0.99), 0, "ratio under 1")
 
-expectEqual(ChannelScore.ggwaveDecodability(successRate: 0.95), 20, "decode 95%")
-expectEqual(ChannelScore.ggwaveDecodability(successRate: 0.80), 15, "decode 80%")
-expectEqual(ChannelScore.ggwaveDecodability(successRate: 0.60), 10, "decode 60%")
-expectEqual(ChannelScore.ggwaveDecodability(successRate: 0.40), 5, "decode 40%")
-expectEqual(ChannelScore.ggwaveDecodability(successRate: 0.399), 0, "decode under 40%")
+expectEqual(ChannelScore.passRatePoints(passed: 5, total: 5), 40, "pass 100%")
+expectEqual(ChannelScore.passRatePoints(passed: 4, total: 5), 32, "pass 80%")
+expectEqual(ChannelScore.passRatePoints(passed: 3, total: 5), 24, "pass 60%")
+expectEqual(ChannelScore.passRatePoints(passed: 2, total: 5), 16, "pass 40%")
+expectEqual(ChannelScore.passRatePoints(passed: 1, total: 5), 8, "pass 20%")
+expectEqual(ChannelScore.passRatePoints(passed: 0, total: 5), 0, "pass 0%")
+expectEqual(ChannelScore.passRatePoints(passed: 5, total: 6), 32, "pass 5/6")
+expectEqual(ChannelScore.passRatePoints(passed: 4, total: 6), 24, "pass 4/6")
+expectEqual(ChannelScore.passRatePoints(passed: 1, total: 6), 0, "pass under 20%")
 
-expectEqual(ChannelScore.cpfskDecodability(snrPoints: 45, stabilityPoints: 20), 20, "cpfsk full")
-expectEqual(ChannelScore.cpfskDecodability(snrPoints: 0, stabilityPoints: 0), 0, "cpfsk zero")
-expectEqual(ChannelScore.cpfskDecodability(snrPoints: 45, stabilityPoints: 0), 10, "cpfsk snr only")
-
-let flat = [10.0, 10.0, 10.0]
-expectEqual(ChannelScore.coefficientOfVariation(flat), 0, "cv of equals")
-let spread = [10.0, 12.0, 8.0]
-let spreadCV = ChannelScore.coefficientOfVariation(spread)
-expect(abs(spreadCV - 0.2) < 1e-9, "cv of 10/12/8 is 0.2, got \(spreadCV)")
-
-let total = ChannelScore.breakdown(
-    mode: .cpfsk,
-    snrDB: 30,
-    coefficientOfVariation: 0.05,
-    ratioDB: 8,
-    decodeRate: nil
-)
-expectEqual(total.snr, 45, "breakdown snr")
-expectEqual(total.stability, 20, "breakdown stability")
-expectEqual(total.separation, 15, "breakdown separation")
-expectEqual(total.decodability, 20, "breakdown decodability")
+let total = ChannelScore.breakdown(snrDB: 30, ratioDB: 8, passedCount: 3, totalCount: 3)
+expectEqual(total.snr, 40, "breakdown snr")
+expectEqual(total.separation, 20, "breakdown separation")
+expectEqual(total.passRate, 40, "breakdown pass rate")
 expectEqual(total.total, 100, "breakdown total")
 
 // MARK: - 频率对
@@ -189,14 +170,28 @@ for (transmission, expected) in zip(analysis.transmissions, expectedStarts) {
     let delta = abs(actual - expected)
     expect(delta < Int(0.08 * rate), "packet \(transmission.packet.sequence) aligned within 80 ms, delta samples \(delta)")
     expect(transmission.detected, "packet \(transmission.packet.sequence) detected")
+    expect(transmission.passed, "packet \(transmission.packet.sequence) payload matches")
     expect(transmission.packetSNRdB >= 20, "packet snr \(transmission.packetSNRdB)")
 }
 expectEqual(analysis.pairs.count, 2, "two frequency pairs")
 for pair in analysis.pairs {
     expect(pair.score.total >= 80, "\(pair.label) score \(pair.score.total) should be recommended")
     expect(pair.isRecommended, "recommended flag")
-    expect(pair.decodeRate == nil, "cpfsk has no decode rate")
+    expect(pair.passRate == 1, "cpfsk pass rate \(pair.passRate)")
+    expectEqual(pair.score.passRate, 40, "full pass-rate points")
 }
+
+let mismatched = sent.map { packet -> SentPacket in
+    var copy = packet
+    copy.payloadHex = "ffffffffffffffff"
+    return copy
+}
+let mismatch = SignalAnalyzer.analyze(capture: capture, packets: mismatched, config: config, mode: .cpfsk)
+for transmission in mismatch.transmissions {
+    expect(transmission.detected, "wrong payload still has energy \(transmission.packet.sequence)")
+    expect(!transmission.passed, "wrong payload is not a pass \(transmission.packet.sequence)")
+}
+expect(mismatch.pairs.allSatisfy { $0.passRate == 0 && $0.score.passRate == 0 }, "energy without matching bits scores no pass rate")
 
 let folder = FileManager.default.temporaryDirectory.appendingPathComponent("AquaEchoSelfCheck", isDirectory: true)
 let csvURL = try CSVExporter.write(pairs: analysis.pairs, mode: .cpfsk, directory: folder)
@@ -206,9 +201,11 @@ expect(csv.contains("频率对"), "csv header")
 expect(csv.contains("Watch发送时间"), "watch time column")
 expect(csv.contains("iPhone接收时间"), "phone time column")
 expect(csv.contains("平均SNR_dB"), "snr column")
-expect(csv.contains("稳定性变异系数"), "cv column")
+expect(!csv.contains("稳定性"), "stability column removed")
+expect(!csv.contains("可解码性"), "decodability column removed")
 expect(csv.contains("双频能量比_dB"), "ratio column")
-expect(csv.contains("ggwave解码成功率"), "decode column")
+expect(csv.contains("通过率"), "pass-rate column")
+expect(csv.contains("本包是否通过"), "per-packet pass column")
 expect(csv.contains("总分"), "total column")
 expect(csv.contains(PacketFactory.hex(Data([1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]))), "payload hex")
 let lines = csv.split(separator: "\n")
@@ -224,6 +221,7 @@ let silentPacket = [SentPacket(sequence: 1, repeatIndex: 0, lowHz: 16_000, highH
 let silent = SignalAnalyzer.analyze(capture: silence, packets: silentPacket, config: config, mode: .cpfsk)
 expect(silent.pairs[0].meanSNRdB < 5, "silence snr \(silent.pairs[0].meanSNRdB)")
 expect(silent.pairs[0].score.snr == 0, "silence snr points")
+expect(!silent.transmissions[0].passed, "silence is not a pass")
 expect(silent.pairs[0].score.total < 40, "silence total \(silent.pairs[0].score.total)")
 
 if failures.isEmpty {

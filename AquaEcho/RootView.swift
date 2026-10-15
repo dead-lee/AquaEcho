@@ -125,7 +125,7 @@ struct PairRow: View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(pair.label).font(.headline)
-                Text("SNR \(format(pair.meanSNRdB)) dB · 波动 \(format(pair.stabilityCV * 100))%")
+                Text("SNR \(format(pair.meanSNRdB)) dB · 通过 \(format(pair.passRate * 100))%")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -149,14 +149,9 @@ struct PairDetailView: View {
         List {
             Section {
                 LabeledContent("总分", value: "\(pair.score.total) / 100")
-                LabeledContent("平均 SNR", value: "\(num(pair.meanSNRdB, 2)) dB → \(pair.score.snr) / 45")
-                LabeledContent("稳定性", value: "CV \(num(pair.stabilityCV, 3)) → \(pair.score.stability) / 20")
-                LabeledContent("双频区分度", value: "\(num(pair.ratioDB, 2)) dB → \(pair.score.separation) / 15")
-                if let rate = pair.decodeRate {
-                    LabeledContent("ggwave 解码", value: "\(num(rate * 100, 1))% → \(pair.score.decodability) / 20")
-                } else {
-                    LabeledContent("可解码性", value: "由 SNR 与稳定性折算 → \(pair.score.decodability) / 20")
-                }
+                LabeledContent("平均 SNR", value: "\(num(pair.meanSNRdB, 2)) dB → \(pair.score.snr) / 40")
+                LabeledContent("双频区分度", value: "\(num(pair.ratioDB, 2)) dB → \(pair.score.separation) / 20")
+                LabeledContent("通过率", value: "\(num(pair.passRate * 100, 1))% → \(pair.score.passRate) / 40")
             }
             Section("每次发送") {
                 ForEach(pair.transmissions) { transmission in
@@ -167,7 +162,7 @@ struct PairDetailView: View {
                             .font(.caption)
                         Text("iPhone \(transmission.phoneReceiveDate.map(stamp) ?? "未检出")")
                             .font(.caption)
-                        Text("本包 SNR \(num(transmission.packetSNRdB, 1)) dB")
+                        Text("本包 SNR \(num(transmission.packetSNRdB, 1)) dB · \(transmission.passed ? "通过" : "未通过")")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -244,11 +239,21 @@ struct ConfigScreen: View {
                 }
             }
             .navigationTitle("配置")
-            .onChange(of: model.config.mode) { _, mode in
-                guard mode == .ggwave else { return }
-                model.config.freqMinHz = Self.limited(model.config.freqMinHz)
-                model.config.freqMaxHz = Self.limited(model.config.freqMaxHz)
+            .onAppear(perform: alignFrequencyRange)
+            .onChange(of: model.config.mode) { _, _ in
+                alignFrequencyRange()
             }
+        }
+    }
+
+    private func alignFrequencyRange() {
+        switch model.config.mode {
+        case .cpfsk:
+            model.config.freqMinHz = 15_000
+            model.config.freqMaxHz = 20_000
+        case .ggwave:
+            model.config.freqMinHz = 15_000
+            model.config.freqMaxHz = 16_000
         }
     }
 
@@ -262,10 +267,6 @@ struct ConfigScreen: View {
                     value.wrappedValue = clamped
                 }
             }
-    }
-
-    private static func limited(_ hz: Double) -> Double {
-        min(TestConfig.ggwaveFreqMaxHz, max(TestConfig.ggwaveFreqMinHz, hz))
     }
 }
 

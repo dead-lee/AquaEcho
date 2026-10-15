@@ -171,8 +171,8 @@ final class WatchModel: ObservableObject {
             status = error.localizedDescription
             log("错误 \(error.localizedDescription)")
         }
-        player.stop()
         link.send(WCEnvelope(kind: .finished, config: config, packet: nil, packets: sent, progress: nil))
+        player.stop()
         isRunning = false
         playing = false
         outputVolume = player.outputVolume

@@ -19,20 +19,20 @@ struct Transmission: Equatable, Identifiable {
     var phoneReceiveDate: Date?
     var packetSNRdB: Double
     var packetRatioDB: Double
-    var packetPower: Double
     var detected: Bool
     var ggwaveDecoded: Bool?
+    /// 解出的 8 字节与发送载荷逐字节一致。
+    var passed: Bool
 
     var id: Int { packet.sequence }
 }
 
 struct ScoreBreakdown: Equatable {
     var snr: Int
-    var stability: Int
     var separation: Int
-    var decodability: Int
+    var passRate: Int
 
-    var total: Int { snr + stability + separation + decodability }
+    var total: Int { snr + separation + passRate }
 }
 
 struct PairScore: Equatable, Identifiable {
@@ -40,10 +40,9 @@ struct PairScore: Equatable, Identifiable {
     var lowHz: Double
     var highHz: Double
     var meanSNRdB: Double
-    var stabilityCV: Double
     var ratioDB: Double
-    /// 0...1。CPFSK 没有协议解码，为 nil。
-    var decodeRate: Double?
+    /// 0...1。载荷完全一致的包数 / 该频率对的总包数。
+    var passRate: Double
     var score: ScoreBreakdown
     var transmissions: [Transmission]
 

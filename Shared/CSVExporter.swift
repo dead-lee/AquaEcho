@@ -12,18 +12,17 @@ enum CSVExporter {
         "Watch发送Unix毫秒",
         "iPhone接收Unix毫秒",
         "平均SNR_dB",
-        "稳定性变异系数",
         "双频能量比_dB",
-        "ggwave解码成功率",
+        "通过率",
         "SNR得分",
-        "稳定性得分",
         "双频区分度得分",
-        "可解码性得分",
+        "通过率得分",
         "总分",
         "本包SNR_dB",
         "本包双频能量比_dB",
         "本包是否检出",
-        "本包ggwave是否解出"
+        "本包ggwave是否解出",
+        "本包是否通过"
     ]
 
     /// 写入 App Documents。文件名 `AquaEcho_Results_yyyyMMdd_HHmmss.csv`。
@@ -48,12 +47,6 @@ enum CSVExporter {
 
     private static func row(pair: PairScore, transmission: Transmission, mode: TestMode) -> [String] {
         let packet = transmission.packet
-        let decodeRate: String
-        if let rate = pair.decodeRate {
-            decodeRate = number(rate * 100, digits: 1)
-        } else {
-            decodeRate = ""
-        }
         let decoded: String
         if let value = transmission.ggwaveDecoded {
             decoded = value ? "1" : "0"
@@ -71,18 +64,17 @@ enum CSVExporter {
             String(milliseconds(packet.watchSendDate)),
             transmission.phoneReceiveDate.map { String(milliseconds($0)) } ?? "",
             number(pair.meanSNRdB, digits: 2),
-            number(pair.stabilityCV, digits: 4),
             number(pair.ratioDB, digits: 2),
-            decodeRate,
+            number(pair.passRate * 100, digits: 1),
             String(pair.score.snr),
-            String(pair.score.stability),
             String(pair.score.separation),
-            String(pair.score.decodability),
+            String(pair.score.passRate),
             String(pair.score.total),
             number(transmission.packetSNRdB, digits: 2),
             number(transmission.packetRatioDB, digits: 2),
             transmission.detected ? "1" : "0",
-            decoded
+            decoded,
+            transmission.passed ? "1" : "0"
         ]
     }
 

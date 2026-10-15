@@ -121,7 +121,7 @@ final class PhoneModel: ObservableObject {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 8_000_000_000)
             guard token == self.runID, self.isRunning else { return }
-            await self.scoreAfterTail()
+            self.beginFinish()
         }
     }
 
@@ -157,7 +157,7 @@ final class PhoneModel: ObservableObject {
             if let config = envelope.config {
                 activeConfig = config.normalized
             }
-            Task { await scoreAfterTail() }
+            beginFinish()
         case .start, .stop:
             break
         }
@@ -172,16 +172,20 @@ final class PhoneModel: ObservableObject {
         receivedCount = packets.count
     }
 
-    private func scoreAfterTail() async {
+    private func beginFinish() {
         guard isRunning, !didScore else { return }
         didScore = true
-        try? await Task.sleep(nanoseconds: 350_000_000)
+        status = "测试完成"
+        isRunning = false
         let snapshot = capture.snapshot()
         capture.stop()
         UIApplication.shared.isIdleTimerDisabled = false
         let config = activeConfig
         let packets = self.packets
-        status = "正在用 Goertzel 评分…"
+        Task { await completeScore(snapshot: snapshot, config: config, packets: packets) }
+    }
+
+    private func completeScore(snapshot: CaptureBuffer, config: TestConfig, packets: [SentPacket]) async {
         let result = await Task.detached(priority: .userInitiated) {
             SignalAnalyzer.analyze(
                 capture: snapshot,
@@ -200,21 +204,13 @@ final class PhoneModel: ObservableObject {
             )
         }.value
         pairs = result.pairs
-        isRunning = false
         do {
             csvURL = try CSVExporter.write(pairs: result.pairs, mode: config.mode)
             log("CSV 已写入 \(csvURL?.lastPathComponent ?? "")")
-            let best = result.pairs.first
-            if let best, best.isRecommended {
-                status = "完成。推荐 \(best.label)，总分 \(best.score.total)。"
-            } else if let best {
-                status = "完成。最高 \(best.score.total) 分（\(best.label)），还没有达到 80 分推荐线。"
-            } else {
-                status = "完成，但没有收到任何包。"
-            }
+            status = "测试完成"
         } catch {
             lastError = "评分已经算出，CSV 没有写入：\(error.localizedDescription)"
-            status = "评分完成。"
+            status = "测试完成"
             log("错误 \(lastError ?? "")")
         }
     }
