@@ -16,11 +16,14 @@ enum AudioCaptureError: LocalizedError {
 }
 
 /// 以 measurement 模式录音，关闭自动增益，尽量保持 48 kHz。
+/// 回调拿到的是当前这一小段采样，调用方自己保留滑动窗口。
 final class AudioCapture {
+    var onSamples: ((_ samples: [Float], _ at: Date, _ sampleRate: Double) -> Void)?
+
     private let engine = AVAudioEngine()
     private let lock = NSLock()
-    private var storage: [Float] = []
     private var startedAt: Date?
+    private var sampleCount = 0
     private var sampleRate: Double = 48_000
     private(set) var isRunning = false
 
@@ -56,14 +59,14 @@ final class AudioCapture {
         }
 
         lock.lock()
-        storage.removeAll(keepingCapacity: true)
         startedAt = nil
+        sampleCount = 0
         sampleRate = format.sampleRate
         lock.unlock()
 
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4_096, format: format) { [weak self] buffer, time in
-            self?.append(buffer, hostTime: time.hostTime)
+            self?.deliver(buffer, hostTime: time.hostTime)
         }
         engine.prepare()
         do {
@@ -82,17 +85,7 @@ final class AudioCapture {
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
-    func snapshot() -> CaptureBuffer {
-        lock.lock()
-        defer { lock.unlock() }
-        return CaptureBuffer(
-            samples: storage,
-            sampleRate: sampleRate,
-            startedAt: startedAt ?? Date()
-        )
-    }
-
-    private func append(_ buffer: AVAudioPCMBuffer, hostTime: UInt64) {
+    private func deliver(_ buffer: AVAudioPCMBuffer, hostTime: UInt64) {
         let frames = Int(buffer.frameLength)
         guard frames > 0 else { return }
         var chunk: [Float] = []
@@ -114,8 +107,12 @@ final class AudioCapture {
                 sampleRate = buffer.format.sampleRate
             }
         }
-        storage.append(contentsOf: chunk)
+        let origin = startedAt ?? Date()
+        let rate = sampleRate
+        let at = origin.addingTimeInterval(Double(sampleCount) / rate)
+        sampleCount += chunk.count
         lock.unlock()
+        onSamples?(chunk, at, rate)
     }
 
     private func date(fromHostTime hostTime: UInt64) -> Date {

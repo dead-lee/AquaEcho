@@ -19,7 +19,7 @@ final class PhoneModel: ObservableObject {
 
     private let capture = AudioCapture()
     private let link = PhoneLink()
-    private var packets: [SentPacket] = []
+    private var receiver: SignalAnalyzer.Receiver?
     private var activeConfig = TestConfig()
     private var didScore = false
     private var runID = UUID()
@@ -89,13 +89,28 @@ final class PhoneModel: ObservableObject {
             return
         }
 
-        packets = []
         pairs = []
         csvURL = nil
         receivedCount = 0
         expectedCount = plan.count * config.repeats
         didScore = false
         activeConfig = config
+        var schedule: [PlannedPair] = []
+        for pair in plan {
+            for _ in 0..<config.repeats {
+                schedule.append(pair)
+            }
+        }
+        let live = SignalAnalyzer.Receiver(config: config, schedule: schedule)
+        live.onUpdate = { [weak self] update in
+            DispatchQueue.main.async {
+                self?.show(update)
+            }
+        }
+        receiver = live
+        capture.onSamples = { samples, date, rate in
+            live.ingest(samples, at: date, sampleRate: rate)
+        }
         isRunning = true
         runID = UUID()
         UIApplication.shared.isIdleTimerDisabled = true
@@ -140,8 +155,7 @@ final class PhoneModel: ObservableObject {
             }
         case .packet:
             if let packet = envelope.packet {
-                upsert(packet)
-                status = "第 \(packet.sequence)/\(max(expectedCount, packet.sequence)) 包 · \(HzFormat.string(packet.lowHz))/\(HzFormat.string(packet.highHz)) Hz"
+                receiver?.note(packet)
                 log("收到包 \(packet.sequence) \(HzFormat.string(packet.lowHz))/\(HzFormat.string(packet.highHz)) Hz 发送时间 \(RunLog.timestamp(packet.watchSendDate))")
             }
         case .log:
@@ -152,7 +166,9 @@ final class PhoneModel: ObservableObject {
             }
         case .finished:
             if let packets = envelope.packets, !packets.isEmpty {
-                for packet in packets { upsert(packet) }
+                for packet in packets {
+                    receiver?.note(packet)
+                }
             }
             if let config = envelope.config {
                 activeConfig = config.normalized
@@ -163,13 +179,12 @@ final class PhoneModel: ObservableObject {
         }
     }
 
-    private func upsert(_ packet: SentPacket) {
-        if let index = packets.firstIndex(where: { $0.sequence == packet.sequence }) {
-            packets[index] = packet
-        } else {
-            packets.append(packet)
-        }
-        receivedCount = packets.count
+    private func show(_ update: SignalAnalyzer.Receiver.Update) {
+        guard !didScore else { return }
+        receivedCount = update.processedCount
+        let packet = update.transmission.packet
+        let verdict = update.transmission.passed ? "通过" : "未通过"
+        status = "第 \(packet.sequence)/\(max(expectedCount, packet.sequence)) 包 · \(HzFormat.string(packet.lowHz))/\(HzFormat.string(packet.highHz)) Hz · \(verdict)"
     }
 
     private func beginFinish() {
@@ -177,35 +192,15 @@ final class PhoneModel: ObservableObject {
         didScore = true
         status = "测试完成"
         isRunning = false
-        let snapshot = capture.snapshot()
+        capture.onSamples = nil
         capture.stop()
         UIApplication.shared.isIdleTimerDisabled = false
-        let config = activeConfig
-        let packets = self.packets
-        Task { await completeScore(snapshot: snapshot, config: config, packets: packets) }
-    }
-
-    private func completeScore(snapshot: CaptureBuffer, config: TestConfig, packets: [SentPacket]) async {
-        let result = await Task.detached(priority: .userInitiated) {
-            SignalAnalyzer.analyze(
-                capture: snapshot,
-                packets: packets,
-                config: config,
-                mode: config.mode,
-                ggwaveMatches: { samples, rate, packet in
-                    GGWaveBridge.matches(
-                        samples: samples,
-                        sampleRate: rate,
-                        startHz: packet.lowHz,
-                        protocol: config.ggwaveProtocol,
-                        payloadHex: packet.payloadHex
-                    )
-                }
-            )
-        }.value
-        pairs = result.pairs
+        let scored = receiver?.finish() ?? []
+        receiver = nil
+        pairs = scored
+        receivedCount = scored.reduce(0) { $0 + $1.transmissions.count }
         do {
-            csvURL = try CSVExporter.write(pairs: result.pairs, mode: config.mode)
+            csvURL = try CSVExporter.write(pairs: scored, mode: activeConfig.mode)
             log("CSV 已写入 \(csvURL?.lastPathComponent ?? "")")
             status = "测试完成"
         } catch {

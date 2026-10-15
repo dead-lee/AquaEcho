@@ -1,95 +1,267 @@
 import Foundation
 
-/// 在连续录音里按发送顺序寻找每个包，并用 Goertzel 测量两个目标频率。
-/// ggwave 的解码由调用方注入，这样评分核心不依赖 C 库。
+/// 在麦克风回调的滑动窗口里检出能量突发，立刻测量并解调，不保留整段会话。
 enum SignalAnalyzer {
-    typealias GGWaveMatcher = (_ samples: [Float], _ sampleRate: Double, _ packet: SentPacket) -> Bool
+    final class Receiver {
+        struct Update {
+            var transmission: Transmission
+            var processedCount: Int
+        }
 
-    struct Result {
-        var transmissions: [Transmission]
-        var pairs: [PairScore]
-    }
+        var onUpdate: ((Update) -> Void)?
+        private(set) var retainedSampleCount = 0
 
-    static func analyze(
-        capture: CaptureBuffer,
-        packets: [SentPacket],
-        config: TestConfig,
-        mode: TestMode,
-        ggwaveMatches: GGWaveMatcher? = nil
-    ) -> Result {
-        let settings = config.normalized
-        let ordered = packets.sorted { $0.sequence < $1.sequence }
-        let sampleRate = capture.sampleRate
-        let silenceSamples = Int(((settings.leadSilenceMs + settings.trailSilenceMs) / 1_000) * sampleRate)
-        let signalSamples = max(Int(0.2 * sampleRate), Int(settings.expectedSignalSeconds * sampleRate))
-        let window = analysisWindow(config: settings, sampleRate: sampleRate)
-        var cursor = 0
-        var transmissions: [Transmission] = []
+        private let config: TestConfig
+        private let schedule: [PlannedPair]
+        private let lock = NSLock()
+        private var sampleRate = 0.0
+        private var sessionStart: Date?
+        private var window: [Float] = []
+        private var emitted = 0
+        private var cursor = 0
+        private var inBurst = false
+        private var burstStart = 0
+        private var burstLow = 0.0
+        private var burstHigh = 0.0
+        private var highRun = 0
+        private var lowRun = 0
+        private var scheduleIndex = 0
+        private var pendingPackets: [SentPacket] = []
+        private var pendingHits: [Hit] = []
+        private var transmissions: [Transmission] = []
 
-        for (index, packet) in ordered.enumerated() {
-            let slack = index == 0 ? Int(2.0 * sampleRate) : Int(0.8 * sampleRate)
-            let searchEnd = min(capture.samples.count, cursor + signalSamples + silenceSamples + slack)
-            if cursor >= searchEnd {
-                transmissions.append(missed(packet))
-                continue
+        init(config: TestConfig, schedule: [PlannedPair]) {
+            self.config = config.normalized
+            self.schedule = schedule
+        }
+
+        func ingest(_ samples: [Float], at date: Date, sampleRate: Double) {
+            guard !samples.isEmpty, sampleRate > 0 else { return }
+            let updates = locked {
+                if self.sampleRate == 0 { self.sampleRate = sampleRate }
+                if sessionStart == nil { sessionStart = date }
+                window.append(contentsOf: samples)
+                scan()
+                trim()
+                retainedSampleCount = window.count
+                return drainUpdates()
             }
-            let region = Array(capture.samples[cursor..<searchEnd])
-            let fit = bestBurst(
-                region: region,
-                sampleRate: sampleRate,
-                f0: packet.lowHz,
-                f1: packet.highHz,
-                signalSamples: signalSamples,
-                window: window
-            )
-            let absoluteStart = cursor + fit.start
-            var transmission = Transmission(
-                packet: packet,
-                phoneReceiveDate: capture.date(forSample: absoluteStart),
-                packetSNRdB: fit.snrDB,
-                packetRatioDB: fit.ratioDB,
-                detected: fit.snrDB >= 5,
-                ggwaveDecoded: nil,
-                passed: false
-            )
-            if mode == .cpfsk {
-                let decoded = demodulatedPayload(
-                    samples: capture.samples,
+            publish(updates)
+        }
+
+        func note(_ packet: SentPacket) {
+            let updates = locked {
+                let alreadySeen = transmissions.contains { $0.packet.sequence == packet.sequence }
+                    || pendingPackets.contains { $0.sequence == packet.sequence }
+                if alreadySeen { return drainUpdates() }
+                if let hit = pendingHits.first {
+                    pendingHits.removeFirst()
+                    record(match(packet: packet, hit: hit))
+                } else {
+                    pendingPackets.append(packet)
+                }
+                return drainUpdates()
+            }
+            publish(updates)
+        }
+
+        func finish() -> [PairScore] {
+            locked {
+                if inBurst {
+                    closeBurst(end: window.count)
+                }
+                for packet in pendingPackets {
+                    transmissions.append(SignalAnalyzer.missed(packet))
+                }
+                pendingPackets = []
+                pendingHits = []
+                window.removeAll(keepingCapacity: false)
+                retainedSampleCount = 0
+                cursor = 0
+                inBurst = false
+                return SignalAnalyzer.aggregate(transmissions, mode: .cpfsk)
+            }
+        }
+
+        private var queued: [Update] = []
+
+        private func drainUpdates() -> [Update] {
+            let updates = queued
+            queued = []
+            return updates
+        }
+
+        private func publish(_ updates: [Update]) {
+            guard let onUpdate else { return }
+            for update in updates {
+                onUpdate(update)
+            }
+        }
+
+        private func locked<T>(_ body: () -> T) -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return body()
+        }
+
+        private func scan() {
+            guard sampleRate > 0 else { return }
+            let symbol = max(256, Int((config.symbolDurationMs / 1_000 * sampleRate).rounded()))
+            let hop = max(128, symbol / 2)
+            let signalNeed = max(symbol, Int(config.expectedSignalSeconds * sampleRate))
+            let trailNeed = Int((config.trailSilenceMs / 1_000 * sampleRate).rounded())
+            var guardHops = 0
+            while cursor + symbol <= window.count, guardHops < 8_000 {
+                guardHops += 1
+                guard let frequencies = listenFrequencies() else { return }
+                let reading = SignalAnalyzer.measureWindow(
+                    samples: window[cursor..<(cursor + symbol)],
                     sampleRate: sampleRate,
-                    burstStart: absoluteStart,
-                    f0: packet.lowHz,
-                    f1: packet.highHz,
-                    symbolSeconds: settings.symbolDurationMs / 1_000
+                    f0: frequencies.0,
+                    f1: frequencies.1
                 )
-                transmission.passed = decoded != nil && decoded == PacketFactory.data(hex: packet.payloadHex)
-            } else if mode == .ggwave, let ggwaveMatches {
-                let padding = Int(0.2 * sampleRate)
-                let decodeStart = max(0, absoluteStart - padding)
-                let decodeEnd = min(capture.samples.count, absoluteStart + signalSamples + padding)
-                let slice = Array(capture.samples[decodeStart..<decodeEnd])
-                let matched = ggwaveMatches(slice, sampleRate, packet)
-                transmission.ggwaveDecoded = matched
-                transmission.passed = matched
-            }
-            transmissions.append(transmission)
-            let step = signalSamples + silenceSamples / 2
-            if fit.snrDB >= 5 {
-                cursor = min(capture.samples.count, absoluteStart + step)
-            } else {
-                cursor = min(capture.samples.count, cursor + step)
+                if !inBurst {
+                    let tone = reading.snrDB >= 6 && reading.ratioDB >= 8
+                    if tone {
+                        if highRun == 0 { burstStart = cursor }
+                        highRun += 1
+                        if highRun >= 2 {
+                            inBurst = true
+                            burstLow = frequencies.0
+                            burstHigh = frequencies.1
+                            lowRun = 0
+                        }
+                    } else {
+                        highRun = 0
+                        let keep = max(0, cursor - hop)
+                        if keep > hop * 2 {
+                            removePrefix(keep)
+                        }
+                    }
+                } else {
+                    lowRun = reading.snrDB < 5 ? lowRun + 1 : 0
+                    let length = cursor - burstStart
+                    let finished = length >= signalNeed && lowRun >= 2
+                    let overflow = length >= signalNeed + trailNeed + symbol
+                    if finished || overflow {
+                        closeBurst(end: min(window.count, cursor + symbol))
+                        continue
+                    }
+                }
+                cursor += hop
             }
         }
 
-        return Result(transmissions: transmissions, pairs: aggregate(transmissions, mode: mode))
+        private func closeBurst(end: Int) {
+            let symbol = max(256, Int((config.symbolDurationMs / 1_000 * sampleRate).rounded()))
+            let hop = max(128, symbol / 2)
+            let signalNeed = max(symbol, Int(config.expectedSignalSeconds * sampleRate))
+            let from = max(0, burstStart - hop)
+            let to = min(window.count, max(end, burstStart + symbol))
+            let length = to - burstStart
+            let low = burstLow
+            let high = burstHigh
+            let absolute = emitted + burstStart
+            inBurst = false
+            highRun = 0
+            lowRun = 0
+            guard length >= signalNeed / 2, to > from, sampleRate > 0 else {
+                removePrefix(max(to, 1))
+                cursor = 0
+                return
+            }
+            let slice = Array(window[from..<to])
+            let offset = burstStart - from
+            removePrefix(to)
+            cursor = 0
+            scheduleIndex += 1
+            let started = sessionStart ?? Date()
+            let fit = SignalAnalyzer.bestBurst(
+                region: slice,
+                sampleRate: sampleRate,
+                f0: low,
+                f1: high,
+                signalSamples: max(symbol, Int(config.expectedSignalSeconds * sampleRate)),
+                window: symbol
+            )
+            let decoded = SignalAnalyzer.demodulatedPayload(
+                samples: slice,
+                sampleRate: sampleRate,
+                burstStart: offset,
+                f0: low,
+                f1: high,
+                symbolSeconds: config.symbolDurationMs / 1_000
+            )
+            let hit = Hit(
+                payload: decoded,
+                snrDB: fit.snrDB,
+                ratioDB: fit.ratioDB,
+                detected: fit.snrDB >= 5,
+                date: started.addingTimeInterval(Double(absolute) / sampleRate),
+                lowHz: low,
+                highHz: high
+            )
+            if pendingPackets.isEmpty {
+                pendingHits.append(hit)
+            } else {
+                let packet = pendingPackets.removeFirst()
+                record(match(packet: packet, hit: hit))
+            }
+        }
+
+        private func listenFrequencies() -> (Double, Double)? {
+            if inBurst { return (burstLow, burstHigh) }
+            if let packet = pendingPackets.first {
+                return (packet.lowHz, packet.highHz)
+            }
+            guard scheduleIndex < schedule.count else { return nil }
+            let pair = schedule[scheduleIndex]
+            return (pair.lowHz, pair.highHz)
+        }
+
+        private func match(packet: SentPacket, hit: Hit) -> Transmission {
+            let passed = hit.payload != nil && hit.payload == PacketFactory.data(hex: packet.payloadHex)
+            return Transmission(
+                packet: packet,
+                phoneReceiveDate: hit.date,
+                packetSNRdB: hit.snrDB,
+                packetRatioDB: hit.ratioDB,
+                detected: hit.detected,
+                passed: passed
+            )
+        }
+
+        private func record(_ transmission: Transmission) {
+            transmissions.append(transmission)
+            queued.append(Update(transmission: transmission, processedCount: transmissions.count))
+        }
+
+        private func removePrefix(_ count: Int) {
+            let n = min(max(0, count), window.count)
+            guard n > 0 else { return }
+            window.removeFirst(n)
+            emitted += n
+            cursor = max(0, cursor - n)
+            burstStart = max(0, burstStart - n)
+        }
+
+        private func trim() {
+            guard !inBurst, sampleRate > 0 else { return }
+            let cap = max(8_192, Int((config.expectedSignalSeconds + 1) * sampleRate))
+            if window.count > cap {
+                removePrefix(window.count - cap)
+            }
+        }
     }
 
-    private static func analysisWindow(config: TestConfig, sampleRate: Double) -> Int {
-        switch config.mode {
-        case .cpfsk:
-            return max(256, Int((config.symbolDurationMs / 1_000) * sampleRate))
-        case .ggwave:
-            return max(256, Int(1_024 * sampleRate / GGWaveBand.sampleRate))
-        }
+    private struct Hit {
+        var payload: Data?
+        var snrDB: Double
+        var ratioDB: Double
+        var detected: Bool
+        var date: Date
+        var lowHz: Double
+        var highHz: Double
     }
 
     private static func missed(_ packet: SentPacket) -> Transmission {
@@ -99,7 +271,6 @@ enum SignalAnalyzer {
             packetSNRdB: 0,
             packetRatioDB: 0,
             detected: false,
-            ggwaveDecoded: false,
             passed: false
         )
     }

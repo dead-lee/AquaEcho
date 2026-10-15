@@ -197,35 +197,16 @@ struct ConfigScreen: View {
                     }
                 }
                 Section("扫描") {
-                    if model.config.mode == .ggwave {
-                        numberField("下限 Hz", value: $model.config.freqMinHz, range: TestConfig.ggwaveFreqMinHz...TestConfig.ggwaveFreqMaxHz)
-                        numberField("上限 Hz", value: $model.config.freqMaxHz, range: TestConfig.ggwaveFreqMinHz...TestConfig.ggwaveFreqMaxHz)
-                    } else {
-                        numberField("下限 Hz", value: $model.config.freqMinHz)
-                        numberField("上限 Hz", value: $model.config.freqMaxHz)
-                    }
+                    numberField("下限 Hz", value: $model.config.freqMinHz)
+                    numberField("上限 Hz", value: $model.config.freqMaxHz)
                     numberField("步进 Hz", value: $model.config.stepHz)
-                    if model.config.mode == .cpfsk {
-                        numberField("频率间隔 Hz", value: $model.config.pairSeparationHz)
-                        Text("两个音至少相隔 1 kHz。实际扫描会从下限开始，每次前进一个步进。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Picker("ggwave 协议", selection: $model.config.ggwaveProtocol) {
-                            ForEach(GGWaveProtocolKind.allCases) { kind in
-                                Text(kind.title).tag(kind)
-                            }
-                        }
-                        Stepper("波形幅度 \(model.config.ggwaveVolume)", value: $model.config.ggwaveVolume, in: 1...50)
-                        Text("幅度上限是 50，避免多音叠加削波。播放前会把峰值归一化到满幅。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+                    numberField("频率间隔 Hz", value: $model.config.pairSeparationHz)
+                    Text("两个音至少相隔 1 kHz。实际扫描会从下限开始，每次前进一个步进。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
                 Section("包") {
-                    if model.config.mode == .cpfsk {
-                        numberField("符号时长 ms", value: $model.config.symbolDurationMs)
-                    }
+                    numberField("符号时长 ms", value: $model.config.symbolDurationMs)
                     Stepper("重复次数 \(model.config.repeats)", value: $model.config.repeats, in: 1...30)
                     numberField("前导静音 ms", value: $model.config.leadSilenceMs)
                     numberField("结尾静音 ms", value: $model.config.trailSilenceMs)
@@ -247,26 +228,13 @@ struct ConfigScreen: View {
     }
 
     private func alignFrequencyRange() {
-        switch model.config.mode {
-        case .cpfsk:
-            model.config.freqMinHz = 15_000
-            model.config.freqMaxHz = 20_000
-        case .ggwave:
-            model.config.freqMinHz = 15_000
-            model.config.freqMaxHz = 16_000
-        }
+        model.config.freqMinHz = 15_000
+        model.config.freqMaxHz = 20_000
     }
 
-    private func numberField(_ title: String, value: Binding<Double>, range: ClosedRange<Double>? = nil) -> some View {
+    private func numberField(_ title: String, value: Binding<Double>) -> some View {
         TextField(title, value: value, format: .number.precision(.fractionLength(0...1)))
             .keyboardType(.decimalPad)
-            .onChange(of: value.wrappedValue) { _, newValue in
-                guard let range else { return }
-                let clamped = min(range.upperBound, max(range.lowerBound, newValue))
-                if clamped != newValue {
-                    value.wrappedValue = clamped
-                }
-            }
     }
 }
 

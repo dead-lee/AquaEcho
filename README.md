@@ -5,25 +5,30 @@
 ## 两端
 
 - **AquaEchoWatch**：发送端。按最大可用音量播放测试信号，并记下每次发送的本地时间。
-- **AquaEcho**：接收端。用 48 kHz、`playAndRecord` + `measurement`（关闭自动增益）录音，用 Goertzel 测两个目标频率的能量和信噪比，按固定标准打 0–100 分。
+- **AquaEcho**：接收端。用 48 kHz、`playAndRecord` + `measurement`（关闭自动增益）打开麦克风。音频回调里只留一个滑动窗口，实时检出能量突发，立刻做 Goertzel 测量和 CPFSK 解调，并和已经收到的发送包比对。处理过的采样随即丢掉，不保存整段会话录音。收到结束消息后，用这些已经算出的结果写评分和 CSV，不再做事后分析。
 - 配置通过 Watch Connectivity 从 iPhone 同步到 Watch。下次打开手表会沿用上次配置。
 
-## 两种信号
+## 信号
 
-1. **自定义 CPFSK**：两个频率分别代表 0 和 1，切换时相位连续。载荷是新生成的随机 8 字节，前面另有 `0xAA 0x55` 同步头。
-2. **ggwave**：通过 Swift Package Manager 集成 [ggwave-spm](https://github.com/ggerganov/ggwave-spm)。使用超声协议，并按步进改起始频率。同样发送随机 8 字节，重复多次。ggwave 自带 Reed-Solomon。
+自定义 CPFSK：两个频率分别代表 0 和 1，切换时相位连续。载荷是新生成的随机 8 字节，前面另有 `0xAA 0x55` 同步头。默认扫描 15.0–20.0 kHz，步进 500 Hz，两个音至少相隔 1 kHz。
 
-CPFSK 默认扫描 15.0–20.0 kHz，步进 500 Hz，两个音至少相隔 1 kHz。ggwave 模式下 `freqMinHz` 为 15000，`freqMaxHz` 为 16000；界面上这两个输入限制在 15000–16000。`GGWaveBand.band` 的高频固定为低频加 1000 Hz。
+配置页在 `onAppear` 和 `onChange(of: mode)` 里整理频率。当前是 CPFSK 时，`freqMinHz` 固定为 15000，`freqMaxHz` 固定为 20000。因此一打开配置页，上下限就和当前模式一致。上下限输入框不限制范围。步进、频率间隔、符号时长、重复次数、前导静音和结尾静音保持当前值，不因打开页面或切换模式而重置。
 
-配置页在 `onAppear` 和 `onChange(of: mode)` 里用同一套规则整理频率。当前是 CPFSK 时，`freqMinHz` 固定为 15000，`freqMaxHz` 固定为 20000。当前是 ggwave 时，`freqMinHz` 固定为 15000，`freqMaxHz` 固定为 16000。因此一打开配置页，上下限就和当前模式一致。CPFSK 的上下限输入框不限制范围。步进、频率间隔、符号时长、ggwave 协议、波形幅度、重复次数、前导静音和结尾静音都保持当前值，不因打开页面或切换模式而重置。CPFSK 专用项和 ggwave 专用项在另一种模式下隐藏，但值还在。
+## 为什么放弃 ggwave
+
+本项目最初同时测试了自定义 CPFSK 和开源库 ggwave。实测表明，在 Apple Watch 内置扬声器上，ggwave 无法稳定工作。
+
+ggwave 使用多音调制，能量被分散到多个频率上。Watch 扬声器在近超声频段（15 kHz 以上）频响已经明显下降且不平坦，导致每个子音的有效 SNR 不足，解码成功率极低。相比之下，CPFSK 只发两个纯音，能量集中，同一硬件上可以通过 Goertzel 可靠检出并解调。
+
+因此本项目移除了全部 ggwave 相关代码。除非未来 Apple Watch 配备专门的超声波换能器，否则 ggwave 在当前硬件上不具备实用价值。
 
 ## 通过
 
-CPFSK 和 ggwave 的“通过”是同一件事：iPhone 解出的 8 字节必须与手表发送的完全一致。只检出能量，或者信噪比够高但比特有错，都不算通过。
+通过是指 iPhone 解出的 8 字节必须与手表发送的完全一致。只检出能量，或者信噪比够高但比特有错，都不算通过。
 
-CPFSK 在信号分析里解调。按符号时长切分，比较两个目标频率的能量：低频一侧是 0，高频一侧是 1。比特从高位排起，先对齐前面的 `0xAA 0x55`，再取出后面的 8 字节，与 `SentPacket` 的载荷逐字节比较。ggwave 仍用它自己的解码，解出的载荷也要逐字节相同。
+解调在音频流里完成。按符号时长切分，比较两个目标频率的能量：低频一侧是 0，高频一侧是 1。比特从高位排起，先对齐前面的 `0xAA 0x55`，再取出后面的 8 字节，与已经收到的 `SentPacket` 逐字节比较。每处理完一个包，立刻更新已收到计数和当前状态。
 
-一个频率对的通过率 = 载荷完全一致的包数 / 该频率对的总包数。两种模式用同一套算法。
+一个频率对的通过率 = 载荷完全一致的包数 / 该频率对的总包数。
 
 ## 评分
 
@@ -42,7 +47,7 @@ CPFSK 在信号分析里解调。按符号时长切分，比较两个目标频�
 1. 用 Xcode 打开 `AquaEcho.xcodeproj`，给两个 target 选好你的开发团队。Bundle ID 目前是 `com.deadlee.AquaEcho`。
 2. 把 iPhone App 装到手机上，Watch App 会一起装上。打开手表上的 AquaEcho 后让它留在前台；应用自己会申请延长运行，熄屏也不会被系统送回表盘。
 3. 在 iPhone 上设好频率、步进、重复次数，点「同步到 Watch」，再点「开始测试」。
-4. 把手表扬声器靠近 iPhone 底部麦克风。播放器音量保持 `engine.mainMixerNode.outputVolume = 1`、`player.volume = 1`，波形峰值归一化到 0.98。ggwave 多音如果直接用音量 100 会削波，所以编码幅度上限是 50，播之前再归一化到峰值 0.98。程序不修改系统音量。开始发送前读取 `AVAudioSession.sharedInstance().outputVolume`，并写入日志「音量 outputVolume=0.xx」。低于 0.95 时状态文字固定为「音量不足，请旋转数码表冠调到最大」，发送仍然继续。
+4. 把手表扬声器靠近 iPhone 底部麦克风。播放器音量保持 `engine.mainMixerNode.outputVolume = 1`、`player.volume = 1`，波形峰值归一化到 0.98。程序不修改系统音量。开始发送前读取 `AVAudioSession.sharedInstance().outputVolume`，并写入日志「音量 outputVolume=0.xx」。低于 0.95 时状态文字固定为「音量不足，请旋转数码表冠调到最大」，发送仍然继续。
 
 模拟器没有这条真实声路，评分要在真机上做。模拟器可以确认界面、延长运行是否申请成功，以及日志有没有写进 Documents。
 
@@ -74,7 +79,7 @@ CPFSK 在信号分析里解调。按符号时长切分，比较两个目标频�
 
 关键事件都写入该文件：开始发送、停止发送、当前频率对、发送时间戳、音量 `outputVolume=0.xx`、错误信息。日志只写在 Documents 里。发送循环里的日志先写入手表本地文件和内存数组 `pendingLogs`，不在循环内通过 Watch Connectivity 发送，避免打断播放节奏。状态变为「发送完成」或「已停止」之后，再一次性把这批日志发给 iPhone。手表端不提供日志查看界面。iPhone 上可在「日志」页、访达或「文件」App 里看。日志页列出 Documents 里的文件，并在这一栏放「一键清理」。它删除所有 `AquaEcho_Results_` 开头的 `.csv` 和所有 `AquaEcho_Log_` 开头的 `.txt`，完成后界面显示「已清理 CSV 和日志」。
 
-全部包发送完成，或用户在手表上停止之后，手表立刻发送 `kind` 为 `.finished` 的消息，不等日志同步。iPhone 一收到就停止录音、开始评分，并把界面状态设为「测试完成」。这个状态只由结束消息驱动，不依赖日志是否已经到达。
+全部包发送完成，或用户在手表上停止之后，手表立刻发送 `kind` 为 `.finished` 的消息，不等日志同步。iPhone 一收到就停止录音，用已经实时算出的各包结果立刻写评分和 CSV，并把界面状态设为「测试完成」。这个状态只由结束消息驱动，不依赖日志是否已经到达，也不再等待事后分析。
 
 每一行是一次发送，包含频率对、随机包的十六进制、序号、Watch 发送时间、iPhone 接收时间、平均信噪比、双频能量比、通过率、三项得分和总分，以及「本包是否通过」（1 或 0）。时间是各自设备的本地时间，并带时区偏移；旁边还有 Unix 毫秒，方便事后对位。
 
@@ -84,7 +89,7 @@ CPFSK 在信号分析里解调。按符号时长切分，比较两个目标频�
 
 ```bash
 swiftc -O -o /tmp/aquaecho-selfcheck \
-  Shared/GGWaveBand.swift Shared/PacketLayout.swift Shared/TestConfig.swift \
+  Shared/PacketLayout.swift Shared/TestConfig.swift \
   Shared/Models.swift Shared/Goertzel.swift Shared/CPFSKSynth.swift \
   Shared/Scoring.swift Shared/SignalAnalyzer.swift Shared/CSVExporter.swift \
   SelfCheck/main.swift

@@ -62,14 +62,6 @@ for index in 1..<pairs.count {
     expect(abs(step - 500) < 0.1, "step \(step)")
 }
 
-sweep.mode = .ggwave
-let bands = sweep.plannedPairs()
-expect(!bands.isEmpty, "ggwave sweep empty")
-for band in bands {
-    expect(band.highHz - band.lowHz > 400, "ggwave bandwidth \(band.label)")
-    expect(band.highHz <= 20_001, "ggwave stays in range \(band.label)")
-}
-
 // MARK: - 连续相位
 
 let rate = 48_000.0
@@ -104,6 +96,17 @@ for index in tone.indices {
 let onTarget = Goertzel.power(samples: tone[...], sampleRate: rate, frequency: 16_000)
 let offTarget = Goertzel.power(samples: tone[...], sampleRate: rate, frequency: 17_000)
 expect(onTarget > offTarget * 20, "goertzel should prefer 16 kHz over 17 kHz")
+
+func feed(_ receiver: SignalAnalyzer.Receiver, audio: [Float], rate: Double, started: Date) {
+    var index = 0
+    let chunk = 4_096
+    while index < audio.count {
+        let end = min(audio.count, index + chunk)
+        let at = started.addingTimeInterval(Double(index) / rate)
+        receiver.ingest(Array(audio[index..<end]), at: at, sampleRate: rate)
+        index = end
+    }
+}
 
 // MARK: - 端到端：合成信号、定位、评分、CSV
 
@@ -162,19 +165,25 @@ for pair in testPairs {
     }
 }
 
-let capture = CaptureBuffer(samples: audio, sampleRate: rate, startedAt: Date(timeIntervalSince1970: 1_700_000_000))
-let analysis = SignalAnalyzer.analyze(capture: capture, packets: sent, config: config, mode: .cpfsk)
-expectEqual(analysis.transmissions.count, sent.count, "transmission count")
-for (transmission, expected) in zip(analysis.transmissions, expectedStarts) {
-    let actual = Int(transmission.phoneReceiveDate!.timeIntervalSince(capture.startedAt) * rate)
+let started = Date(timeIntervalSince1970: 1_700_000_000)
+let schedule = testPairs.flatMap { pair in Array(repeating: pair, count: config.repeats) }
+let live = SignalAnalyzer.Receiver(config: config, schedule: schedule)
+feed(live, audio: audio, rate: rate, started: started)
+expect(live.retainedSampleCount < audio.count / 2, "window released processed audio, kept \(live.retainedSampleCount)")
+for packet in sent { live.note(packet) }
+let analysisPairs = live.finish()
+let analysisTransmissions = analysisPairs.flatMap(\.transmissions).sorted { $0.packet.sequence < $1.packet.sequence }
+expectEqual(analysisTransmissions.count, sent.count, "transmission count")
+for (transmission, expected) in zip(analysisTransmissions, expectedStarts) {
+    let actual = Int(transmission.phoneReceiveDate!.timeIntervalSince(started) * rate)
     let delta = abs(actual - expected)
     expect(delta < Int(0.08 * rate), "packet \(transmission.packet.sequence) aligned within 80 ms, delta samples \(delta)")
     expect(transmission.detected, "packet \(transmission.packet.sequence) detected")
     expect(transmission.passed, "packet \(transmission.packet.sequence) payload matches")
     expect(transmission.packetSNRdB >= 20, "packet snr \(transmission.packetSNRdB)")
 }
-expectEqual(analysis.pairs.count, 2, "two frequency pairs")
-for pair in analysis.pairs {
+expectEqual(analysisPairs.count, 2, "two frequency pairs")
+for pair in analysisPairs {
     expect(pair.score.total >= 80, "\(pair.label) score \(pair.score.total) should be recommended")
     expect(pair.isRecommended, "recommended flag")
     expect(pair.passRate == 1, "cpfsk pass rate \(pair.passRate)")
@@ -186,15 +195,18 @@ let mismatched = sent.map { packet -> SentPacket in
     copy.payloadHex = "ffffffffffffffff"
     return copy
 }
-let mismatch = SignalAnalyzer.analyze(capture: capture, packets: mismatched, config: config, mode: .cpfsk)
-for transmission in mismatch.transmissions {
+let mismatchReceiver = SignalAnalyzer.Receiver(config: config, schedule: schedule)
+feed(mismatchReceiver, audio: audio, rate: rate, started: started)
+for packet in mismatched { mismatchReceiver.note(packet) }
+let mismatchPairs = mismatchReceiver.finish()
+for transmission in mismatchPairs.flatMap(\.transmissions) {
     expect(transmission.detected, "wrong payload still has energy \(transmission.packet.sequence)")
     expect(!transmission.passed, "wrong payload is not a pass \(transmission.packet.sequence)")
 }
-expect(mismatch.pairs.allSatisfy { $0.passRate == 0 && $0.score.passRate == 0 }, "energy without matching bits scores no pass rate")
+expect(mismatchPairs.allSatisfy { $0.passRate == 0 && $0.score.passRate == 0 }, "energy without matching bits scores no pass rate")
 
 let folder = FileManager.default.temporaryDirectory.appendingPathComponent("AquaEchoSelfCheck", isDirectory: true)
-let csvURL = try CSVExporter.write(pairs: analysis.pairs, mode: .cpfsk, directory: folder)
+let csvURL = try CSVExporter.write(pairs: analysisPairs, mode: .cpfsk, directory: folder)
 let csv = try String(contentsOf: csvURL, encoding: .utf8)
 expect(csvURL.lastPathComponent.hasPrefix("AquaEcho_Results_"), "csv name \(csvURL.lastPathComponent)")
 expect(csv.contains("频率对"), "csv header")
@@ -206,26 +218,27 @@ expect(!csv.contains("可解码性"), "decodability column removed")
 expect(csv.contains("双频能量比_dB"), "ratio column")
 expect(csv.contains("通过率"), "pass-rate column")
 expect(csv.contains("本包是否通过"), "per-packet pass column")
+expect(!csv.contains("ggwave"), "ggwave column removed")
 expect(csv.contains("总分"), "total column")
 expect(csv.contains(PacketFactory.hex(Data([1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]))), "payload hex")
 let lines = csv.split(separator: "\n")
 expectEqual(lines.count, sent.count + 1, "one header plus one row per packet")
 
 // 静音不应得到高分。
-let silence = CaptureBuffer(
-    samples: [Float](repeating: 0, count: Int(rate * 2)),
-    sampleRate: rate,
-    startedAt: Date(timeIntervalSince1970: 1_700_000_000)
+let silentReceiver = SignalAnalyzer.Receiver(
+    config: config,
+    schedule: [PlannedPair(lowHz: 16_000, highHz: 17_000)]
 )
-let silentPacket = [SentPacket(sequence: 1, repeatIndex: 0, lowHz: 16_000, highHz: 17_000, payloadHex: "0011223344556677", watchSendTimestamp: 1_700_000_000)]
-let silent = SignalAnalyzer.analyze(capture: silence, packets: silentPacket, config: config, mode: .cpfsk)
-expect(silent.pairs[0].meanSNRdB < 5, "silence snr \(silent.pairs[0].meanSNRdB)")
-expect(silent.pairs[0].score.snr == 0, "silence snr points")
-expect(!silent.transmissions[0].passed, "silence is not a pass")
-expect(silent.pairs[0].score.total < 40, "silence total \(silent.pairs[0].score.total)")
+feed(silentReceiver, audio: [Float](repeating: 0, count: Int(rate * 2)), rate: rate, started: started)
+silentReceiver.note(SentPacket(sequence: 1, repeatIndex: 0, lowHz: 16_000, highHz: 17_000, payloadHex: "0011223344556677", watchSendTimestamp: 1_700_000_000))
+let silent = silentReceiver.finish()
+expect(silent[0].meanSNRdB < 5, "silence snr \(silent[0].meanSNRdB)")
+expect(silent[0].score.snr == 0, "silence snr points")
+expect(!silent[0].transmissions[0].passed, "silence is not a pass")
+expect(silent[0].score.total < 40, "silence total \(silent[0].score.total)")
 
 if failures.isEmpty {
-    print("SELF_CHECK_OK \(analysis.pairs.map { "\($0.label)=\($0.score.total)" }.joined(separator: ", "))")
+    print("SELF_CHECK_OK \(analysisPairs.map { "\($0.label)=\($0.score.total)" }.joined(separator: ", "))")
 } else {
     fputs("\(failures.count) failure(s)\n", stderr)
     exit(1)

@@ -2,15 +2,11 @@ import Foundation
 
 enum TestMode: String, Codable, CaseIterable, Identifiable {
     case cpfsk
-    case ggwave
 
     var id: String { rawValue }
 
     var title: String {
-        switch self {
-        case .cpfsk: return "自定义 CPFSK"
-        case .ggwave: return "ggwave 超声"
-        }
+        "自定义 CPFSK"
     }
 }
 
@@ -37,23 +33,11 @@ struct TestConfig: Codable, Equatable {
     var leadSilenceMs: Double = 250
     var trailSilenceMs: Double = 350
     var sampleRate: Double = 48_000
-    var ggwaveProtocol: GGWaveProtocolKind = .ultrasoundFast
-    /// ggwave 编码音量。库作者建议不要超过 50，否则多音叠加会削波。
-    var ggwaveVolume: Int = 50
-
-    /// ggwave 的默认扫描范围。界面输入也限制在这一段。
-    static let ggwaveFreqMinHz = 15_000.0
-    static let ggwaveFreqMaxHz = 16_000.0
 
     var normalized: TestConfig {
         var copy = self
-        if copy.mode == .ggwave {
-            copy.freqMinHz = copy.freqMinHz.clamped(to: Self.ggwaveFreqMinHz...Self.ggwaveFreqMaxHz)
-            copy.freqMaxHz = copy.freqMaxHz.clamped(to: Self.ggwaveFreqMinHz...Self.ggwaveFreqMaxHz)
-        } else {
-            copy.freqMinHz = copy.freqMinHz.clamped(to: 1_000...22_000)
-            copy.freqMaxHz = copy.freqMaxHz.clamped(to: 1_000...22_000)
-        }
+        copy.freqMinHz = copy.freqMinHz.clamped(to: 1_000...22_000)
+        copy.freqMaxHz = copy.freqMaxHz.clamped(to: 1_000...22_000)
         if copy.freqMaxHz < copy.freqMinHz {
             swap(&copy.freqMinHz, &copy.freqMaxHz)
         }
@@ -64,49 +48,26 @@ struct TestConfig: Codable, Equatable {
         copy.leadSilenceMs = copy.leadSilenceMs.clamped(to: 50...1_000)
         copy.trailSilenceMs = copy.trailSilenceMs.clamped(to: 50...1_500)
         copy.sampleRate = 48_000
-        copy.ggwaveVolume = copy.ggwaveVolume.clamped(to: 1...50)
         return copy
     }
 
-    /// CPFSK：从下限按步进取出 f，配对 f 与 f+间隔（间隔至少 1 kHz），且两个音都落在扫描范围内。
-    /// ggwave：按步进移动超声协议起始频率，并保证 6 个音都落在范围内。
+    /// 从下限按步进取出 f，配对 f 与 f+间隔（间隔至少 1 kHz），且两个音都落在扫描范围内。
     func plannedPairs() -> [PlannedPair] {
         let config = normalized
-        switch config.mode {
-        case .cpfsk:
-            var pairs: [PlannedPair] = []
-            var frequency = config.freqMinHz
-            while frequency + config.pairSeparationHz <= config.freqMaxHz + 0.5 {
-                pairs.append(PlannedPair(lowHz: frequency, highHz: frequency + config.pairSeparationHz))
-                frequency += config.stepHz
-            }
-            return pairs
-        case .ggwave:
-            var seenBins = Set<Int>()
-            var pairs: [PlannedPair] = []
-            var frequency = config.freqMinHz
-            while frequency <= config.freqMaxHz + 0.5 {
-                let band = GGWaveBand.band(startHz: frequency, toneCount: config.ggwaveProtocol.toneCount)
-                if band.high <= config.freqMaxHz + 1, seenBins.insert(band.bin).inserted {
-                    pairs.append(PlannedPair(lowHz: band.low, highHz: band.high))
-                }
-                frequency += config.stepHz
-            }
-            return pairs
+        var pairs: [PlannedPair] = []
+        var frequency = config.freqMinHz
+        while frequency + config.pairSeparationHz <= config.freqMaxHz + 0.5 {
+            pairs.append(PlannedPair(lowHz: frequency, highHz: frequency + config.pairSeparationHz))
+            frequency += config.stepHz
         }
+        return pairs
     }
 
     /// 不含前后静音的信号时长，供接收端搜索突发。
     var expectedSignalSeconds: Double {
         let config = normalized
-        switch config.mode {
-        case .cpfsk:
-            let bits = Double((PacketLayout.preamble.count + PacketLayout.payloadBytes) * 8)
-            return bits * config.symbolDurationMs / 1_000
-        case .ggwave:
-            // 以实测的 Ultrasound Fast 8 字节变长包（约 1.32 s）为基准，按帧数比例缩放，并留一点余量。
-            return 1.6 * Double(config.ggwaveProtocol.framesPerTx) / 6.0
-        }
+        let bits = Double((PacketLayout.preamble.count + PacketLayout.payloadBytes) * 8)
+        return bits * config.symbolDurationMs / 1_000
     }
 
     var estimatedTestSeconds: Double {

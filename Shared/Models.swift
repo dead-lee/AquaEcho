@@ -20,7 +20,6 @@ struct Transmission: Equatable, Identifiable {
     var packetSNRdB: Double
     var packetRatioDB: Double
     var detected: Bool
-    var ggwaveDecoded: Bool?
     /// 解出的 8 字节与发送载荷逐字节一致。
     var passed: Bool
 

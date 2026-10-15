@@ -8,8 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		A10000000000000000000014 /* AquaEchoWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* AquaEchoWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		A10000000000000000000023 /* ggwave in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000018 /* ggwave */; };
-		A10000000000000000000024 /* ggwave in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000019 /* ggwave */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -87,7 +85,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A10000000000000000000023 /* ggwave in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -95,7 +92,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A10000000000000000000024 /* ggwave in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -144,7 +140,6 @@
 			);
 			name = AquaEcho;
 			packageProductDependencies = (
-				A10000000000000000000018 /* ggwave */,
 			);
 			productName = AquaEcho;
 			productReference = A10000000000000000000004 /* AquaEcho.app */;
@@ -168,7 +163,6 @@
 			);
 			name = AquaEchoWatch;
 			packageProductDependencies = (
-				A10000000000000000000019 /* ggwave */,
 			);
 			productName = AquaEchoWatch;
 			productReference = A10000000000000000000005 /* AquaEchoWatch.app */;
@@ -203,7 +197,6 @@
 			mainGroup = A10000000000000000000006;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				A10000000000000000000017 /* XCRemoteSwiftPackageReference "ggwave-spm" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A10000000000000000000007 /* Products */;
@@ -523,29 +516,6 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		A10000000000000000000017 /* XCRemoteSwiftPackageReference "ggwave-spm" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/ggerganov/ggwave-spm";
-			requirement = {
-				branch = master;
-				kind = branch;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		A10000000000000000000018 /* ggwave */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A10000000000000000000017 /* XCRemoteSwiftPackageReference "ggwave-spm" */;
-			productName = ggwave;
-		};
-		A10000000000000000000019 /* ggwave */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A10000000000000000000017 /* XCRemoteSwiftPackageReference "ggwave-spm" */;
-			productName = ggwave;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A10000000000000000000001 /* Project object */;
 }

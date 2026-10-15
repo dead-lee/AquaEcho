@@ -21,7 +21,6 @@ enum CSVExporter {
         "本包SNR_dB",
         "本包双频能量比_dB",
         "本包是否检出",
-        "本包ggwave是否解出",
         "本包是否通过"
     ]
 
@@ -47,12 +46,6 @@ enum CSVExporter {
 
     private static func row(pair: PairScore, transmission: Transmission, mode: TestMode) -> [String] {
         let packet = transmission.packet
-        let decoded: String
-        if let value = transmission.ggwaveDecoded {
-            decoded = value ? "1" : "0"
-        } else {
-            decoded = ""
-        }
         return [
             mode.rawValue,
             field(PlannedPair(lowHz: pair.lowHz, highHz: pair.highHz).csvField),
@@ -73,7 +66,6 @@ enum CSVExporter {
             number(transmission.packetSNRdB, digits: 2),
             number(transmission.packetRatioDB, digits: 2),
             transmission.detected ? "1" : "0",
-            decoded,
             transmission.passed ? "1" : "0"
         ]
     }

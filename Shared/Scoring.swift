@@ -4,7 +4,7 @@ import Foundation
 ///
 /// 边界归入更高一档：信噪比正好 25 dB 记 40 分，正好 20 dB 记 32 分；
 /// 双频能量比正好 6 dB 记 20 分；通过率正好 100% 记 40 分，正好 80% 记 32 分。
-/// CPFSK 和 ggwave 共用同一套通过率：载荷逐字节一致的包数 / 总包数。
+/// 通过率：载荷逐字节一致的包数 / 总包数。
 enum ChannelScore {
     static func snrPoints(_ snrDB: Double) -> Int {
         switch snrDB {

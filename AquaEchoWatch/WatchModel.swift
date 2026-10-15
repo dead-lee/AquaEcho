@@ -217,35 +217,16 @@ final class WatchModel: ObservableObject {
 
     private func render(pair: PlannedPair, payload: Data, config: TestConfig) throws -> (samples: [Float], leadSamples: Int) {
         let leadSamples = Int((config.leadSilenceMs / 1_000 * config.sampleRate).rounded())
-        switch config.mode {
-        case .cpfsk:
-            let samples = CPFSKSynth.playback(
-                bits: PacketLayout.bits(for: payload),
-                f0: pair.lowHz,
-                f1: pair.highHz,
-                symbolSeconds: config.symbolDurationMs / 1_000,
-                sampleRate: config.sampleRate,
-                leadMs: config.leadSilenceMs,
-                trailMs: config.trailSilenceMs
-            )
-            return (samples, leadSamples)
-        case .ggwave:
-            guard let tone = GGWaveBridge.encode(
-                payload: payload,
-                startHz: pair.lowHz,
-                protocol: config.ggwaveProtocol,
-                volume: config.ggwaveVolume
-            ) else {
-                throw TonePlayerError.empty
-            }
-            let samples = CPFSKSynth.padded(
-                tone,
-                leadMs: config.leadSilenceMs,
-                trailMs: config.trailSilenceMs,
-                sampleRate: config.sampleRate
-            )
-            return (samples, leadSamples)
-        }
+        let samples = CPFSKSynth.playback(
+            bits: PacketLayout.bits(for: payload),
+            f0: pair.lowHz,
+            f1: pair.highHz,
+            symbolSeconds: config.symbolDurationMs / 1_000,
+            sampleRate: config.sampleRate,
+            leadMs: config.leadSilenceMs,
+            trailMs: config.trailSilenceMs
+        )
+        return (samples, leadSamples)
     }
 }
 
