@@ -4,6 +4,10 @@
 <dict>
 	<key>WKApplication</key>
 	<true/>
+	<key>WKBackgroundModes</key>
+	<array>
+		<string>self-care</string>
+	</array>
 	<key>WKCompanionAppBundleIdentifier</key>
 	<string>com.deadlee.AquaEcho</string>
 	<key>CFBundleDisplayName</key>

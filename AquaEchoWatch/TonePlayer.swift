@@ -19,6 +19,8 @@ final class TonePlayer {
     private let player = AVAudioPlayerNode()
     private var attached = false
     private let sampleRate: Double = 48_000
+    private let playbackLock = NSLock()
+    private var playbackDone: CheckedContinuation<Void, Never>?
 
     var outputVolume: Float { AVAudioSession.sharedInstance().outputVolume }
 
@@ -51,6 +53,7 @@ final class TonePlayer {
     func stop() {
         player.stop()
         engine.stop()
+        finishPlayback()
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
@@ -70,8 +73,11 @@ final class TonePlayer {
         let leadSeconds = Double(max(0, leadSamples)) / sampleRate
         let clock = SendClock()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.playbackLock.lock()
+            self.playbackDone = continuation
+            self.playbackLock.unlock()
             self.player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
-                continuation.resume()
+                self.finishPlayback()
             }
             if !self.player.isPlaying {
                 self.player.play()
@@ -80,6 +86,14 @@ final class TonePlayer {
             clock.date = Date().addingTimeInterval(latency + leadSeconds)
         }
         return clock.date
+    }
+
+    private func finishPlayback() {
+        playbackLock.lock()
+        let continuation = playbackDone
+        playbackDone = nil
+        playbackLock.unlock()
+        continuation?.resume()
     }
 }
 

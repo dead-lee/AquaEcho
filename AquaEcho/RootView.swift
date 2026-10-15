@@ -9,6 +9,8 @@ struct RootView: View {
                 .tabItem { Label("结果", systemImage: "list.number") }
             ConfigScreen()
                 .tabItem { Label("配置", systemImage: "slider.horizontal.3") }
+            LogScreen()
+                .tabItem { Label("日志", systemImage: "doc.text") }
         }
     }
 }
@@ -101,7 +103,8 @@ struct ResultsScreen: View {
                         if let url = model.csvURL {
                             Section("CSV") {
                                 Text(url.lastPathComponent)
-                                Text("文件在 App 的 Documents 里。用数据线连接 Mac 后，在访达侧边栏点这台 iPhone，打开 AquaEcho，把 CSV 拖到桌面。")
+                                ShareLink(item: url) { Label("导出 CSV", systemImage: "square.and.arrow.up") }
+                                Text("文件在 App 的 Documents 里。访达或「文件」App 都能直接看到。")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
@@ -242,5 +245,48 @@ struct ConfigScreen: View {
     private func numberField(_ title: String, value: Binding<Double>) -> some View {
         TextField(title, value: value, format: .number.precision(.fractionLength(0...1)))
             .keyboardType(.decimalPad)
+    }
+}
+
+struct LogScreen: View {
+    @EnvironmentObject private var model: PhoneModel
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section(model.logURL?.lastPathComponent ?? "当前日志") {
+                    if model.logText.isEmpty {
+                        Text("还没有日志")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(model.logText)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    if let url = model.logURL {
+                        ShareLink(item: url) {
+                            Label("导出当前日志", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    Button("刷新", action: model.reloadLog)
+                }
+                Section("Documents 里的日志和 CSV") {
+                    ForEach(RunLog.documentFiles(), id: \.path) { url in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(url.lastPathComponent)
+                                .font(.caption)
+                            ShareLink(item: url) {
+                                Text("导出")
+                            }
+                        }
+                    }
+                    Text("文件在 App 的 Documents 目录。用数据线连上 Mac 后，在访达侧边栏打开这台 iPhone 里的 AquaEcho；或在「文件」App 的「我的 iPhone」里查看。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("日志")
+            .onAppear(perform: model.reloadLog)
+        }
     }
 }

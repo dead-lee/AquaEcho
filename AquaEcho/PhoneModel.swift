@@ -13,6 +13,8 @@ final class PhoneModel: ObservableObject {
     @Published var lastError: String?
     @Published var receivedCount = 0
     @Published var expectedCount = 0
+    @Published var logText = ""
+    @Published var logURL: URL?
 
     private let capture = AudioCapture()
     private let link = PhoneLink()
@@ -39,6 +41,16 @@ final class PhoneModel: ObservableObject {
             }
         }
         link.activate()
+        logURL = RunLog.shared.fileURL
+        RunLog.shared.onAppend = { [weak self] _ in
+            self?.logText = RunLog.shared.text()
+        }
+        log("应用启动。日志 \(RunLog.shared.fileURL.lastPathComponent)")
+    }
+
+    func reloadLog() {
+        logText = RunLog.shared.text()
+        logURL = RunLog.shared.fileURL
     }
 
     func syncConfig() {
@@ -47,6 +59,7 @@ final class PhoneModel: ObservableObject {
         let delivered = link.send(WCEnvelope(kind: .config, config: config, packet: nil, packets: nil, progress: nil))
         status = delivered ? "配置已传到 Watch。" : "Watch 还没连上。配置已保存，连接后会自动带上。"
         lastError = nil
+        log(status)
     }
 
     func startTest() async {
@@ -58,17 +71,20 @@ final class PhoneModel: ObservableObject {
         let plan = config.plannedPairs()
         guard !plan.isEmpty else {
             lastError = "这个频率范围放不下一组测试。请提高上限，或减小步进。"
+            log("错误 \(lastError ?? "")")
             return
         }
         let allowed = await AudioCapture.requestPermission()
         guard allowed else {
             lastError = "需要麦克风权限才能给信号打分。"
+            log("错误 \(lastError ?? "")")
             return
         }
         do {
             try capture.start()
         } catch {
             lastError = error.localizedDescription
+            log("错误 \(error.localizedDescription)")
             return
         }
 
@@ -83,6 +99,7 @@ final class PhoneModel: ObservableObject {
         runID = UUID()
         UIApplication.shared.isIdleTimerDisabled = true
         status = "正在录音，等待 Watch 播放…"
+        log("开始录音，等待 \(expectedCount) 个包")
         let started = link.send(WCEnvelope(kind: .start, config: config, packet: nil, packets: nil, progress: nil))
         if !started {
             capture.stop()
@@ -90,6 +107,7 @@ final class PhoneModel: ObservableObject {
             UIApplication.shared.isIdleTimerDisabled = false
             lastError = "Watch 不可达。请先打开手表上的 AquaEcho，并保持 App 在前台。"
             status = "未能开始。"
+            log("错误 \(lastError ?? "")")
         }
     }
 
@@ -97,6 +115,7 @@ final class PhoneModel: ObservableObject {
         guard isRunning else { return }
         _ = link.send(WCEnvelope(kind: .stop, config: nil, packet: nil, packets: nil, progress: nil))
         status = "正在停止，等当前这个包播完…"
+        log("请求停止发送")
         let token = runID
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 8_000_000_000)
@@ -122,6 +141,13 @@ final class PhoneModel: ObservableObject {
             if let packet = envelope.packet {
                 upsert(packet)
                 status = "第 \(packet.sequence)/\(max(expectedCount, packet.sequence)) 包 · \(HzFormat.string(packet.lowHz))/\(HzFormat.string(packet.highHz)) Hz"
+                log("收到包 \(packet.sequence) \(HzFormat.string(packet.lowHz))/\(HzFormat.string(packet.highHz)) Hz 发送时间 \(RunLog.timestamp(packet.watchSendDate))")
+            }
+        case .log:
+            if let line = envelope.log {
+                for part in line.split(separator: "\n", omittingEmptySubsequences: true) {
+                    RunLog.shared.append(String(part))
+                }
             }
         case .finished:
             if let packets = envelope.packets, !packets.isEmpty {
@@ -176,6 +202,7 @@ final class PhoneModel: ObservableObject {
         isRunning = false
         do {
             csvURL = try CSVExporter.write(pairs: result.pairs, mode: config.mode)
+            log("CSV 已写入 \(csvURL?.lastPathComponent ?? "")")
             let best = result.pairs.first
             if let best, best.isRecommended {
                 status = "完成。推荐 \(best.label)，总分 \(best.score.total)。"
@@ -187,6 +214,11 @@ final class PhoneModel: ObservableObject {
         } catch {
             lastError = "评分已经算出，CSV 没有写入：\(error.localizedDescription)"
             status = "评分完成。"
+            log("错误 \(lastError ?? "")")
         }
+    }
+
+    private func log(_ message: String) {
+        RunLog.shared.append("[iPhone] \(message)")
     }
 }

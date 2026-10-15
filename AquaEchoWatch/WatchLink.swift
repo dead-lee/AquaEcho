@@ -12,11 +12,17 @@ final class WatchLink: NSObject, WCSessionDelegate {
         session.activate()
     }
 
-    func send(_ envelope: WCEnvelope) {
-        guard WCSession.isSupported() else { return }
+    @discardableResult
+    func send(_ envelope: WCEnvelope) -> Bool {
+        guard WCSession.isSupported() else { return false }
         let session = WCSession.default
         let payload = WCCodec.encode(envelope)
-        guard session.activationState == .activated else { return }
+        guard session.activationState == .activated else { return false }
+        if envelope.kind == .log {
+            guard session.isReachable else { return false }
+            session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+            return true
+        }
         if session.isReachable {
             session.sendMessage(payload, replyHandler: nil) { _ in
                 session.transferUserInfo(payload)
@@ -24,6 +30,7 @@ final class WatchLink: NSObject, WCSessionDelegate {
         } else {
             session.transferUserInfo(payload)
         }
+        return true
     }
 
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {

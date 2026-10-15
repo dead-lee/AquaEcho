@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A10000000000000000000014 /* AquaEchoWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* AquaEchoWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A10000000000000000000023 /* ggwave in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000018 /* ggwave */; };
+		A10000000000000000000024 /* ggwave in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000019 /* ggwave */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		A10000000000000000000016 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -252,12 +258,6 @@
 		};
 /* End PBXTargetDependency section */
 
-/* Begin PBXBuildFile section */
-		A10000000000000000000014 /* AquaEchoWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* AquaEchoWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		A10000000000000000000023 /* ggwave in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000018 /* ggwave */; };
-		A10000000000000000000024 /* ggwave in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000019 /* ggwave */; };
-/* End PBXBuildFile section */
-
 /* Begin XCBuildConfiguration section */
 		A1000000000000000000001B /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -362,7 +362,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 9B7SGKFHVP;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEcho/Info.plist;
@@ -398,7 +398,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 9B7SGKFHVP;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEcho/Info.plist;
@@ -434,7 +434,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 9B7SGKFHVP;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEchoWatch/Info.plist;
@@ -466,7 +466,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 9B7SGKFHVP;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEchoWatch/Info.plist;

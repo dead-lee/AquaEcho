@@ -71,6 +71,7 @@ enum WCKind: String, Codable {
     case progress
     case packet
     case finished
+    case log
 }
 
 struct WCEnvelope: Codable {
@@ -79,6 +80,7 @@ struct WCEnvelope: Codable {
     var packet: SentPacket?
     var packets: [SentPacket]?
     var progress: String?
+    var log: String? = nil
 }
 
 enum WCCodec {
