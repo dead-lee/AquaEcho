@@ -107,6 +107,11 @@ final class PhoneModel: ObservableObject {
                 self?.show(update)
             }
         }
+        live.onLog = { [weak self] line in
+            DispatchQueue.main.async {
+                self?.log(line)
+            }
+        }
         receiver = live
         capture.onSamples = { samples, date, rate in
             live.ingest(samples, at: date, sampleRate: rate)

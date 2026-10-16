@@ -17,6 +17,8 @@ struct SentPacket: Codable, Equatable, Identifiable {
 struct Transmission: Equatable, Identifiable {
     var packet: SentPacket
     var phoneReceiveDate: Date?
+    /// closeBurst 结束时的绝对时间。
+    var demodEndDate: Date?
     var packetSNRdB: Double
     var packetRatioDB: Double
     var detected: Bool

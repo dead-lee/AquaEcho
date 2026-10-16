@@ -9,13 +9,15 @@ enum SignalAnalyzer {
         }
 
         var onUpdate: ((Update) -> Void)?
+        var onLog: ((String) -> Void)?
         private(set) var retainedSampleCount = 0
 
         private let config: TestConfig
         private let schedule: [PlannedPair]
         private let lock = NSLock()
         private var sampleRate = 0.0
-        private var sessionStart: Date?
+        private var chunkDate = Date()
+        private var burstDate = Date()
         private var window: [Float] = []
         private var emitted = 0
         private var cursor = 0
@@ -37,36 +39,36 @@ enum SignalAnalyzer {
 
         func ingest(_ samples: [Float], at date: Date, sampleRate: Double) {
             guard !samples.isEmpty, sampleRate > 0 else { return }
-            let updates = locked {
+            let (updates, logs) = locked { () -> ([Update], [String]) in
                 if self.sampleRate == 0 { self.sampleRate = sampleRate }
-                if sessionStart == nil { sessionStart = date }
+                chunkDate = date
                 window.append(contentsOf: samples)
                 scan()
                 trim()
                 retainedSampleCount = window.count
-                return drainUpdates()
+                return (drainUpdates(), drainLogs())
             }
-            publish(updates)
+            publish(logs: logs, updates: updates)
         }
 
         func note(_ packet: SentPacket) {
-            let updates = locked {
+            let (updates, logs) = locked { () -> ([Update], [String]) in
                 let alreadySeen = transmissions.contains { $0.packet.sequence == packet.sequence }
                     || pendingPackets.contains { $0.sequence == packet.sequence }
-                if alreadySeen { return drainUpdates() }
+                if alreadySeen { return (drainUpdates(), drainLogs()) }
                 if let hit = pendingHits.first {
                     pendingHits.removeFirst()
                     record(match(packet: packet, hit: hit))
                 } else {
                     pendingPackets.append(packet)
                 }
-                return drainUpdates()
+                return (drainUpdates(), drainLogs())
             }
-            publish(updates)
+            publish(logs: logs, updates: updates)
         }
 
         func finish() -> [PairScore] {
-            locked {
+            let (scores, logs) = locked { () -> ([PairScore], [String]) in
                 if inBurst {
                     closeBurst(end: window.count)
                 }
@@ -79,11 +81,14 @@ enum SignalAnalyzer {
                 retainedSampleCount = 0
                 cursor = 0
                 inBurst = false
-                return SignalAnalyzer.aggregate(transmissions, mode: .cpfsk)
+                return (SignalAnalyzer.aggregate(transmissions, mode: .cpfsk), drainLogs())
             }
+            publish(logs: logs, updates: [])
+            return scores
         }
 
         private var queued: [Update] = []
+        private var queuedLogs: [String] = []
 
         private func drainUpdates() -> [Update] {
             let updates = queued
@@ -91,10 +96,22 @@ enum SignalAnalyzer {
             return updates
         }
 
-        private func publish(_ updates: [Update]) {
-            guard let onUpdate else { return }
-            for update in updates {
-                onUpdate(update)
+        private func drainLogs() -> [String] {
+            let lines = queuedLogs
+            queuedLogs = []
+            return lines
+        }
+
+        private func publish(logs: [String], updates: [Update]) {
+            if let onLog {
+                for line in logs {
+                    onLog(line)
+                }
+            }
+            if let onUpdate {
+                for update in updates {
+                    onUpdate(update)
+                }
             }
         }
 
@@ -127,6 +144,7 @@ enum SignalAnalyzer {
                         highRun += 1
                         if highRun >= 2 {
                             inBurst = true
+                            burstDate = chunkDate
                             burstLow = frequencies.0
                             burstHigh = frequencies.1
                             lowRun = 0
@@ -161,7 +179,7 @@ enum SignalAnalyzer {
             let length = to - burstStart
             let low = burstLow
             let high = burstHigh
-            let absolute = emitted + burstStart
+            let receiveDate = burstDate
             inBurst = false
             highRun = 0
             lowRun = 0
@@ -175,7 +193,7 @@ enum SignalAnalyzer {
             removePrefix(to)
             cursor = 0
             scheduleIndex += 1
-            let started = sessionStart ?? Date()
+            let demodStarted = Date()
             let fit = SignalAnalyzer.bestBurst(
                 region: slice,
                 sampleRate: sampleRate,
@@ -192,12 +210,18 @@ enum SignalAnalyzer {
                 f1: high,
                 symbolSeconds: config.symbolDurationMs / 1_000
             )
+            let demodEndDate = Date()
+            let demodMilliseconds = max(0, Int((demodEndDate.timeIntervalSince(demodStarted) * 1_000).rounded()))
             let hit = Hit(
-                payload: decoded,
+                payload: decoded.payload,
+                preambleAligned: decoded.preambleAligned,
                 snrDB: fit.snrDB,
                 ratioDB: fit.ratioDB,
                 detected: fit.snrDB >= 5,
-                date: started.addingTimeInterval(Double(absolute) / sampleRate),
+                date: receiveDate,
+                demodEndDate: demodEndDate,
+                demodMilliseconds: demodMilliseconds,
+                burstIndex: scheduleIndex,
                 lowHz: low,
                 highHz: high
             )
@@ -207,6 +231,7 @@ enum SignalAnalyzer {
                 let packet = pendingPackets.removeFirst()
                 record(match(packet: packet, hit: hit))
             }
+            queuedLogs.append("包 \(scheduleIndex) 结束后窗口剩余 \(window.count) 样本")
         }
 
         private func listenFrequencies() -> (Double, Double)? {
@@ -221,14 +246,23 @@ enum SignalAnalyzer {
 
         private func match(packet: SentPacket, hit: Hit) -> Transmission {
             let passed = hit.payload != nil && hit.payload == PacketFactory.data(hex: packet.payloadHex)
+            queuedLogs.append(resultLine(hit, passed: passed))
             return Transmission(
                 packet: packet,
                 phoneReceiveDate: hit.date,
+                demodEndDate: hit.demodEndDate,
                 packetSNRdB: hit.snrDB,
                 packetRatioDB: hit.ratioDB,
                 detected: hit.detected,
                 passed: passed
             )
+        }
+
+        private func resultLine(_ hit: Hit, passed: Bool) -> String {
+            let aligned = hit.preambleAligned ? "是" : "否"
+            let decoded = hit.preambleAligned ? (hit.payload.map(PacketFactory.hex) ?? "空") : "空"
+            let ok = passed ? "是" : "否"
+            return "包 \(hit.burstIndex) 前导对齐=\(aligned) 解出=\(decoded) 通过=\(ok) 解调耗时=\(hit.demodMilliseconds)ms"
         }
 
         private func record(_ transmission: Transmission) {
@@ -256,10 +290,14 @@ enum SignalAnalyzer {
 
     private struct Hit {
         var payload: Data?
+        var preambleAligned: Bool
         var snrDB: Double
         var ratioDB: Double
         var detected: Bool
         var date: Date
+        var demodEndDate: Date
+        var demodMilliseconds: Int
+        var burstIndex: Int
         var lowHz: Double
         var highHz: Double
     }
@@ -268,6 +306,7 @@ enum SignalAnalyzer {
         Transmission(
             packet: packet,
             phoneReceiveDate: nil,
+            demodEndDate: nil,
             packetSNRdB: 0,
             packetRatioDB: 0,
             detected: false,
@@ -382,7 +421,12 @@ enum SignalAnalyzer {
         )
     }
 
-    /// 在检出的突发附近滑动符号网格，用 0xAA 0x55 对齐，再按两个目标频率的能量逐符号还原 8 字节。
+    private struct DemodOutcome {
+        var preambleAligned: Bool
+        var payload: Data?
+    }
+
+    /// 在检出的突发附近滑动符号网格，用 1 字节 0xAA 对齐，再按两个目标频率的能量逐符号还原 8 字节。
     private static func demodulatedPayload(
         samples: [Float],
         sampleRate: Double,
@@ -390,12 +434,14 @@ enum SignalAnalyzer {
         f0: Double,
         f1: Double,
         symbolSeconds: Double
-    ) -> Data? {
+    ) -> DemodOutcome {
         let symbolSamples = max(1, Int((symbolSeconds * sampleRate).rounded()))
         let preamble = preambleBits()
         let totalBits = preamble.count + PacketLayout.payloadBytes * 8
         let frameSamples = symbolSamples * totalBits
-        guard frameSamples > 0, samples.count >= frameSamples else { return nil }
+        guard frameSamples > 0, samples.count >= frameSamples else {
+            return DemodOutcome(preambleAligned: false, payload: nil)
+        }
 
         let search = max(symbolSamples, Int(0.12 * sampleRate))
         let coarse = max(1, symbolSamples / 8)
@@ -409,7 +455,9 @@ enum SignalAnalyzer {
             preamble: preamble,
             f0: f0,
             f1: f1
-        ) else { return nil }
+        ) else {
+            return DemodOutcome(preambleAligned: false, payload: nil)
+        }
         let aligned = bestAlignment(
             samples: samples,
             sampleRate: sampleRate,
@@ -423,7 +471,9 @@ enum SignalAnalyzer {
         ) ?? coarseBest
         guard aligned.hits == preamble.count,
               aligned.offset >= 0,
-              aligned.offset + frameSamples <= samples.count else { return nil }
+              aligned.offset + frameSamples <= samples.count else {
+            return DemodOutcome(preambleAligned: false, payload: nil)
+        }
 
         let bits = symbolBits(
             samples: samples,
@@ -437,8 +487,10 @@ enum SignalAnalyzer {
         let bytes = bytesFromBits(bits)
         let preambleCount = PacketLayout.preamble.count
         guard bytes.count == preambleCount + PacketLayout.payloadBytes,
-              Array(bytes.prefix(preambleCount)) == PacketLayout.preamble else { return nil }
-        return Data(bytes.dropFirst(preambleCount))
+              Array(bytes.prefix(preambleCount)) == PacketLayout.preamble else {
+            return DemodOutcome(preambleAligned: false, payload: nil)
+        }
+        return DemodOutcome(preambleAligned: true, payload: Data(bytes.dropFirst(preambleCount)))
     }
 
     private struct Alignment {

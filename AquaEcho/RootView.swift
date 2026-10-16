@@ -197,19 +197,29 @@ struct ConfigScreen: View {
                     }
                 }
                 Section("扫描") {
-                    numberField("下限 Hz", value: $model.config.freqMinHz)
-                    numberField("上限 Hz", value: $model.config.freqMaxHz)
-                    numberField("步进 Hz", value: $model.config.stepHz)
-                    numberField("频率间隔 Hz", value: $model.config.pairSeparationHz)
+                    numberField("下限", unit: "Hz", value: $model.config.freqMinHz)
+                    numberField("上限", unit: "Hz", value: $model.config.freqMaxHz)
+                    numberField("步进", unit: "Hz", value: $model.config.stepHz)
+                    numberField("频率间隔", unit: "Hz", value: $model.config.pairSeparationHz)
                     Text("两个音至少相隔 1 kHz。实际扫描会从下限开始，每次前进一个步进。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 Section("包") {
-                    numberField("符号时长 ms", value: $model.config.symbolDurationMs)
-                    Stepper("重复次数 \(model.config.repeats)", value: $model.config.repeats, in: 1...30)
-                    numberField("前导静音 ms", value: $model.config.leadSilenceMs)
-                    numberField("结尾静音 ms", value: $model.config.trailSilenceMs)
+                    numberField("符号时长", unit: "ms", value: $model.config.symbolDurationMs)
+                    HStack {
+                        Text("重复次数")
+                        Spacer(minLength: 8)
+                        Stepper(value: $model.config.repeats, in: 1...30) {
+                            Text("\(model.config.repeats)")
+                                .monospacedDigit()
+                        }
+                        .fixedSize()
+                        Text("次")
+                            .foregroundStyle(.secondary)
+                    }
+                    numberField("前导静音", unit: "ms", value: $model.config.leadSilenceMs)
+                    numberField("结尾静音", unit: "ms", value: $model.config.trailSilenceMs)
                     Text("每次发送都会重新生成 8 字节随机内容，序号写在 CSV 里。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -232,9 +242,17 @@ struct ConfigScreen: View {
         model.config.freqMaxHz = 20_000
     }
 
-    private func numberField(_ title: String, value: Binding<Double>) -> some View {
-        TextField(title, value: value, format: .number.precision(.fractionLength(0...1)))
-            .keyboardType(.decimalPad)
+    private func numberField(_ title: String, unit: String, value: Binding<Double>) -> some View {
+        HStack {
+            Text(title)
+            Spacer(minLength: 8)
+            TextField(title, value: value, format: .number.precision(.fractionLength(0...1)))
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: 140)
+            Text(unit)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

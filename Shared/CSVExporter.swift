@@ -21,7 +21,8 @@ enum CSVExporter {
         "本包SNR_dB",
         "本包双频能量比_dB",
         "本包是否检出",
-        "本包是否通过"
+        "本包是否通过",
+        "解调结束时间"
     ]
 
     /// 写入 App Documents。文件名 `AquaEcho_Results_yyyyMMdd_HHmmss.csv`。
@@ -66,7 +67,8 @@ enum CSVExporter {
             number(transmission.packetSNRdB, digits: 2),
             number(transmission.packetRatioDB, digits: 2),
             transmission.detected ? "1" : "0",
-            transmission.passed ? "1" : "0"
+            transmission.passed ? "1" : "0",
+            field(transmission.demodEndDate.map(timestamp) ?? "")
         ]
     }
 

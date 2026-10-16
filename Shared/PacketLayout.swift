@@ -3,8 +3,8 @@ import Security
 
 enum PacketLayout {
     static let payloadBytes = 8
-    /// 包体前面的同步头，不计入随机的 8 字节载荷。0xAA 0x55 提供密集的 0/1 翻转。
-    static let preamble: [UInt8] = [0xAA, 0x55]
+    /// 包体前面的同步头，固定 1 字节，不计入随机的 8 字节载荷。一包共 72 bit。
+    static let preamble: [UInt8] = [0xAA]
 
     static func bits(for payload: Data) -> [Bool] {
         var bytes = preamble

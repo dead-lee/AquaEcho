@@ -165,9 +165,14 @@ for pair in testPairs {
     }
 }
 
+expectEqual(PacketLayout.preamble, [0xAA], "preamble is one byte")
+expectEqual(PacketLayout.bits(for: Data(repeating: 0, count: 8)).count, 72, "72 bits")
+
 let started = Date(timeIntervalSince1970: 1_700_000_000)
 let schedule = testPairs.flatMap { pair in Array(repeating: pair, count: config.repeats) }
 let live = SignalAnalyzer.Receiver(config: config, schedule: schedule)
+var phoneLogs: [String] = []
+live.onLog = { phoneLogs.append($0) }
 feed(live, audio: audio, rate: rate, started: started)
 expect(live.retainedSampleCount < audio.count / 2, "window released processed audio, kept \(live.retainedSampleCount)")
 for packet in sent { live.note(packet) }
@@ -177,10 +182,15 @@ expectEqual(analysisTransmissions.count, sent.count, "transmission count")
 for (transmission, expected) in zip(analysisTransmissions, expectedStarts) {
     let actual = Int(transmission.phoneReceiveDate!.timeIntervalSince(started) * rate)
     let delta = abs(actual - expected)
-    expect(delta < Int(0.08 * rate), "packet \(transmission.packet.sequence) aligned within 80 ms, delta samples \(delta)")
+    expect(delta < Int(0.12 * rate), "packet \(transmission.packet.sequence) callback date within 120 ms, delta samples \(delta)")
+    expect(transmission.demodEndDate != nil, "packet \(transmission.packet.sequence) demod end")
     expect(transmission.detected, "packet \(transmission.packet.sequence) detected")
     expect(transmission.passed, "packet \(transmission.packet.sequence) payload matches")
     expect(transmission.packetSNRdB >= 20, "packet snr \(transmission.packetSNRdB)")
+}
+for sequence in 1...sent.count {
+    expect(phoneLogs.contains { $0.hasPrefix("包 \(sequence) 前导对齐=是 解出=") && $0.contains(" 通过=是 解调耗时=") && $0.hasSuffix("ms") }, "result log \(sequence)")
+    expect(phoneLogs.contains { $0.hasPrefix("包 \(sequence) 结束后窗口剩余 ") && $0.hasSuffix(" 样本") }, "window log \(sequence)")
 }
 expectEqual(analysisPairs.count, 2, "two frequency pairs")
 for pair in analysisPairs {
@@ -218,6 +228,7 @@ expect(!csv.contains("可解码性"), "decodability column removed")
 expect(csv.contains("双频能量比_dB"), "ratio column")
 expect(csv.contains("通过率"), "pass-rate column")
 expect(csv.contains("本包是否通过"), "per-packet pass column")
+expect(csv.contains("解调结束时间"), "demod end column")
 expect(!csv.contains("ggwave"), "ggwave column removed")
 expect(csv.contains("总分"), "total column")
 expect(csv.contains(PacketFactory.hex(Data([1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]))), "payload hex")

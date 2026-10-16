@@ -151,6 +151,7 @@ final class WatchModel: ObservableObject {
                     ))
                     let sendDate = try await player.play(samples: rendered.samples, leadSamples: rendered.leadSamples)
                     log("发送时间 \(RunLog.timestamp(sendDate)) 序号 \(sequence) \(pair.label)")
+                    log("播放结束 序号 \(sequence) 时间 \(RunLog.timestamp(Date()))")
                     let packet = SentPacket(
                         sequence: sequence,
                         repeatIndex: repeatIndex,
