@@ -66,9 +66,13 @@ for index in 1..<pairs.count {
 
 let rate = 48_000.0
 let fresh = TestConfig()
-expectEqual(fresh.toneDurationMs, 50, "tone default")
-expectEqual(fresh.silenceDurationMs, 20, "silence default")
+expectEqual(fresh.toneDurationMs, 30, "tone default")
+expectEqual(fresh.silenceDurationMs, 15, "silence default")
+expectEqual(fresh.leadSilenceMs, 20, "lead default")
+expectEqual(fresh.trailSilenceMs, 20, "trail default")
 expectEqual(fresh.symbolDurationMs, 40, "symbol default unchanged")
+let packetMs = fresh.normalized.expectedSignalSeconds * 1_000 + fresh.leadSilenceMs + fresh.trailSilenceMs
+expect(packetMs < 3_000, "packet under 3 seconds, got \(packetMs)")
 let bits: [Bool] = [false, false, true, true, false]
 let rendered = CPFSKSynth.render(
     bits: bits,
@@ -133,8 +137,8 @@ struct Noise {
 
 var config = TestConfig()
 config.repeats = 3
-config.leadSilenceMs = 200
-config.trailSilenceMs = 250
+config.leadSilenceMs = 20
+config.trailSilenceMs = 20
 config.symbolDurationMs = 20
 let testPairs = [
     PlannedPair(lowHz: 16_000, highHz: 17_000),
@@ -306,9 +310,10 @@ expect(!silent[0].transmissions[0].passed, "silence is not a pass")
 expect(silent[0].score.total < 40, "silence total \(silent[0].score.total)")
 expect(phoneLogs.filter { $0.hasPrefix("解调=") }.count == sent.count, "only full 64-bit frames log demod")
 let peakLogs = phoneLogs.filter { $0.hasPrefix("检测峰值 SNR=") && $0.contains(" 能量比=") }
-expect(peakLogs.count >= 20, "one peak log per audio second, got \(peakLogs.count)")
+let wholeSeconds = Int(Double(audio.count) / rate)
+expect(peakLogs.count >= wholeSeconds - 1, "one peak log per audio second, got \(peakLogs.count)")
 
-var shortTone = [Float](repeating: 0, count: Int(0.020 * rate))
+var shortTone = [Float](repeating: 0, count: Int(0.008 * rate))
 for index in shortTone.indices {
     shortTone[index] = 0.98 * sin(2 * Float.pi * 16_000 * Float(index) / Float(rate))
 }
@@ -320,7 +325,7 @@ var shortLogs: [String] = []
 shortReceiver.onLog = { shortLogs.append($0) }
 feed(shortReceiver, audio: shortTone, rate: rate, started: started)
 _ = shortReceiver.finish()
-expect(shortLogs.contains { $0.hasPrefix("丢弃脉冲 频率=低 ") && $0.hasSuffix(" 原因=短于25ms") }, "discard short pulse \(shortLogs)")
+expect(shortLogs.contains { $0.hasPrefix("丢弃脉冲 频率=低 ") && $0.hasSuffix(" 原因=短于16ms") }, "discard short pulse \(shortLogs)")
 expect(shortLogs.allSatisfy { !$0.hasPrefix("解调=") }, "short pulse does not finish a frame")
 
 if failures.isEmpty {

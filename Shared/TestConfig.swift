@@ -30,12 +30,12 @@ struct TestConfig: Codable, Equatable {
     var pairSeparationHz: Double = 1_000
     var symbolDurationMs: Double = 40
     /// 每个 bit 的单音时长。发送端读取这一项。
-    var toneDurationMs: Double = 50
+    var toneDurationMs: Double = 30
     /// bit 之间的静音时长。发送端读取这一项。
-    var silenceDurationMs: Double = 20
+    var silenceDurationMs: Double = 15
     var repeats: Int = 5
-    var leadSilenceMs: Double = 250
-    var trailSilenceMs: Double = 350
+    var leadSilenceMs: Double = 20
+    var trailSilenceMs: Double = 20
     var sampleRate: Double = 48_000
 
     var normalized: TestConfig {
@@ -51,8 +51,8 @@ struct TestConfig: Codable, Equatable {
         copy.toneDurationMs = copy.toneDurationMs.clamped(to: 10...500)
         copy.silenceDurationMs = copy.silenceDurationMs.clamped(to: 0...500)
         copy.repeats = copy.repeats.clamped(to: 1...30)
-        copy.leadSilenceMs = copy.leadSilenceMs.clamped(to: 50...1_000)
-        copy.trailSilenceMs = copy.trailSilenceMs.clamped(to: 50...1_500)
+        copy.leadSilenceMs = copy.leadSilenceMs.clamped(to: 0...1_000)
+        copy.trailSilenceMs = copy.trailSilenceMs.clamped(to: 0...1_500)
         copy.sampleRate = 48_000
         return copy
     }
@@ -108,11 +108,11 @@ extension TestConfig {
         stepHz = try container.decodeIfPresent(Double.self, forKey: .stepHz) ?? 500
         pairSeparationHz = try container.decodeIfPresent(Double.self, forKey: .pairSeparationHz) ?? 1_000
         symbolDurationMs = try container.decodeIfPresent(Double.self, forKey: .symbolDurationMs) ?? 40
-        toneDurationMs = try container.decodeIfPresent(Double.self, forKey: .toneDurationMs) ?? 50
-        silenceDurationMs = try container.decodeIfPresent(Double.self, forKey: .silenceDurationMs) ?? 20
+        toneDurationMs = try container.decodeIfPresent(Double.self, forKey: .toneDurationMs) ?? 30
+        silenceDurationMs = try container.decodeIfPresent(Double.self, forKey: .silenceDurationMs) ?? 15
         repeats = try container.decodeIfPresent(Int.self, forKey: .repeats) ?? 5
-        leadSilenceMs = try container.decodeIfPresent(Double.self, forKey: .leadSilenceMs) ?? 250
-        trailSilenceMs = try container.decodeIfPresent(Double.self, forKey: .trailSilenceMs) ?? 350
+        leadSilenceMs = try container.decodeIfPresent(Double.self, forKey: .leadSilenceMs) ?? 20
+        trailSilenceMs = try container.decodeIfPresent(Double.self, forKey: .trailSilenceMs) ?? 20
         sampleRate = try container.decodeIfPresent(Double.self, forKey: .sampleRate) ?? 48_000
     }
 
@@ -141,7 +141,17 @@ enum ConfigStore {
               let config = try? JSONDecoder().decode(TestConfig.self, from: data) else {
             return TestConfig()
         }
-        return config.normalized
+        var loaded = config.normalized
+        // 上一版内置默认是 50/20/250/350。这四项都还停在旧默认值时改成 30/15/20/20，整包才能在 3 秒内发完。
+        if loaded.toneDurationMs == 50, loaded.silenceDurationMs == 20,
+           loaded.leadSilenceMs == 250, loaded.trailSilenceMs == 350 {
+            loaded.toneDurationMs = 30
+            loaded.silenceDurationMs = 15
+            loaded.leadSilenceMs = 20
+            loaded.trailSilenceMs = 20
+            save(loaded)
+        }
+        return loaded
     }
 
     static func save(_ config: TestConfig) {
