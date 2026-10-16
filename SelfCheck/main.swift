@@ -285,6 +285,23 @@ expect(silent[0].score.snr == 0, "silence snr points")
 expect(!silent[0].transmissions[0].passed, "silence is not a pass")
 expect(silent[0].score.total < 40, "silence total \(silent[0].score.total)")
 expect(phoneLogs.filter { $0.hasPrefix("解调=") }.count == sent.count, "only full 64-bit frames log demod")
+let peakLogs = phoneLogs.filter { $0.hasPrefix("检测峰值 SNR=") && $0.contains(" 能量比=") }
+expect(peakLogs.count >= 20, "one peak log per audio second, got \(peakLogs.count)")
+
+var shortTone = [Float](repeating: 0, count: Int(0.020 * rate))
+for index in shortTone.indices {
+    shortTone[index] = 0.98 * sin(2 * Float.pi * 16_000 * Float(index) / Float(rate))
+}
+let shortReceiver = SignalAnalyzer.Receiver(
+    config: config,
+    schedule: [PlannedPair(lowHz: 16_000, highHz: 17_000)]
+)
+var shortLogs: [String] = []
+shortReceiver.onLog = { shortLogs.append($0) }
+feed(shortReceiver, audio: shortTone, rate: rate, started: started)
+_ = shortReceiver.finish()
+expect(shortLogs.contains { $0.hasPrefix("丢弃脉冲 频率=低 ") && $0.hasSuffix(" 原因=短于30ms") }, "discard short pulse \(shortLogs)")
+expect(shortLogs.allSatisfy { !$0.hasPrefix("解调=") }, "short pulse does not finish a frame")
 
 if failures.isEmpty {
     print("SELF_CHECK_OK \(analysisPairs.map { "\($0.label)=\($0.score.total)" }.joined(separator: ", "))")
