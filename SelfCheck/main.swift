@@ -92,16 +92,44 @@ let probePlan = OFDMModem.plan(f0: 16_000, f1: 17_000, config: fresh, bitCount: 
 let leadSamples = Int((fresh.leadSilenceMs / 1_000 * rate).rounded())
 let trailSamples = Int((fresh.trailSilenceMs / 1_000 * rate).rounded())
 expectEqual(rendered.count, leadSamples + probePlan.packetSamples + trailSamples, "packet length")
-let chirp = rendered[leadSamples..<(leadSamples + probePlan.chirp.count)]
-let chirpPeak = chirp.map { abs($0) }.max() ?? 0
-expect(abs(Double(chirpPeak) - 0.98) < 0.02, "chirp peak \(chirpPeak)")
-let earlyPeak = chirp.prefix(Int(0.002 * rate)).map { abs($0) }.max() ?? 0
-expect(earlyPeak > 0.9, "chirp has no fade-in, early peak \(earlyPeak)")
-if let roundTrip = OFDMModem.demodulate(window: Array(rendered), symbolStart: leadSamples + probePlan.chirp.count + probePlan.gap, plan: probePlan) {
+expectEqual(probePlan.preamble.count, 8 * (960 + 240), "naiser length")
+let preamble = rendered[leadSamples..<(leadSamples + probePlan.preamble.count)]
+let preamblePeak = preamble.map { abs($0) }.max() ?? 0
+expect(abs(Double(preamblePeak) - 0.98) < 0.02, "preamble peak \(preamblePeak)")
+let earlyPeak = preamble.prefix(Int(0.002 * rate)).map { abs($0) }.max() ?? 0
+expect(earlyPeak > 0.9, "preamble starts at full amplitude, early peak \(earlyPeak)")
+let guardPeak = preamble.dropFirst(960).prefix(240).map { abs($0) }.max() ?? 1
+expect(guardPeak == 0, "naiser guard is silence")
+if let locked = OFDMModem.naiserLock(samples: Array(preamble), peakIndex: 0) {
+    expect(locked.score >= 0.95, "naiser metric \(locked.score)")
+    expect(locked.start < 16, "naiser start \(locked.start)")
+} else {
+    expect(false, "naiser lock on the preamble")
+}
+if let roundTrip = OFDMModem.demodulate(window: Array(rendered), symbolStart: leadSamples + probePlan.preamble.count + probePlan.gap, plan: probePlan) {
     expectEqual(roundTrip.bits, PacketLayout.bits(for: probePayload), "ofdm round trip")
 } else {
     expect(false, "ofdm round trip produced no bits")
 }
+var dirty = rendered
+for index in dirty.indices {
+    dirty[index] += 0.8 * sin(2 * Float.pi * 1_000 * Float(index) / Float(rate))
+}
+let noisyReceiver = SignalAnalyzer.Receiver(
+    config: fresh,
+    schedule: [PlannedPair(lowHz: 16_000, highHz: 17_000)]
+)
+feed(noisyReceiver, audio: dirty, rate: rate, started: Date(timeIntervalSince1970: 1_700_000_000))
+noisyReceiver.note(SentPacket(
+    sequence: 1,
+    repeatIndex: 0,
+    lowHz: 16_000,
+    highHz: 17_000,
+    payloadHex: PacketFactory.hex(probePayload),
+    watchSendTimestamp: 1_700_000_000
+))
+let noisyPacket = noisyReceiver.finish().flatMap(\.transmissions).first
+expect(noisyPacket?.passed == true, "loud out-of-band tone still decodes")
 
 // MARK: - Goertzel 能分出目标音
 
@@ -141,7 +169,6 @@ config.leadSilenceMs = 20
 config.trailSilenceMs = 20
 config.symbolDurationMs = 20
 config.cyclicPrefixMs = 1.4
-config.chirpDurationMs = 80
 let testPairs = [
     PlannedPair(lowHz: 16_000, highHz: 17_000),
     PlannedPair(lowHz: 17_500, highHz: 18_500)

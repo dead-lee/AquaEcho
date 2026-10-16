@@ -32,11 +32,11 @@ struct TestConfig: Codable, Equatable {
     var symbolDurationMs: Double = 20
     /// 旧字段。OFDM 发送不再读取。
     var toneDurationMs: Double = 30
-    /// 线性调频和第一个符号之间的间隔。
+    /// Naiser 前导和第一个符号之间的间隔。
     var silenceDurationMs: Double = 15
     /// 循环前缀。1.4 ms 在 48 kHz 下是 67 点。
     var cyclicPrefixMs: Double = 1.4
-    /// 线性调频同步头的时长。
+    /// 旧字段。Naiser 前导长度固定，发送不再读取。
     var chirpDurationMs: Double = 100
     var repeats: Int = 5
     var leadSilenceMs: Double = 20
@@ -76,7 +76,7 @@ struct TestConfig: Codable, Equatable {
         return pairs
     }
 
-    /// 不含前后静音的信号时长：线性调频、间隔和全部 OFDM 符号。
+    /// 不含前后静音的信号时长：Naiser 前导、间隔和全部 OFDM 符号。
     var expectedSignalSeconds: Double {
         let config = normalized
         let pair = config.plannedPairs().first

@@ -1,6 +1,6 @@
 import Foundation
 
-/// 在麦克风回调的滑动窗口里用线性调频找到 OFDM 包，解出 64 bit 后校验，不保留整段会话。
+/// 在麦克风回调的滑动窗口里用 Naiser 前导找到 OFDM 包，解出 64 bit 后校验，不保留整段会话。
 enum SignalAnalyzer {
     final class Receiver {
         struct Update {
@@ -25,6 +25,11 @@ enum SignalAnalyzer {
         private var cachedPlan: OFDMModem.Plan?
         private var cachedLow = -1.0
         private var cachedHigh = -1.0
+        private var heard: [Float] = []
+        private var heardCount = -1
+        private var heardLow = -1.0
+        private var heardHigh = -1.0
+        private var correlation: [Float] = []
         private var bits: [Bool] = []
         private var firstBitDate: Date?
         private var firstBitWall: Date?
@@ -122,68 +127,133 @@ enum SignalAnalyzer {
         private func scan() {
             while true {
                 guard let pair = currentPair(), let plan = currentPlan(low: pair.0, high: pair.1) else { return }
-                let needed = plan.packetSamples + plan.alignRadius + plan.coarseHop
-                guard emitted + window.count >= searchFrom + needed else { return }
-                let local = searchFrom - emitted
-                guard local >= 0 else {
+                let audio = filteredWindow(low: pair.0, high: pair.1, preamble: plan.preamble)
+                let symbolCount = 1 + plan.dataCounts.count
+                guard emitted + audio.count >= searchFrom + plan.packetSamples else { return }
+                let localStart = searchFrom - emitted
+                guard localStart >= 0 else {
                     searchFrom = emitted
                     continue
                 }
-                hopCounter += 1
-                if hopCounter % 4 == 0, local + 384 <= window.count {
-                    let reading = SignalAnalyzer.measureWindow(
-                        samples: window[local..<(local + 384)],
-                        sampleRate: sampleRate,
-                        f0: pair.0,
-                        f1: pair.1
-                    )
-                    notePeak(reading, hopSamples: plan.coarseHop)
-                } else {
-                    notePeak(WindowReading(snrDB: -10, ratioDB: 0), hopSamples: plan.coarseHop)
+                let lastLag = audio.count - plan.preamble.count
+                let searchEnd = min(lastLag, audio.count - plan.packetSamples + OFDMModem.naiserWindow)
+                guard searchEnd >= localStart else { return }
+                let candidates = candidateLocals(from: localStart, through: searchEnd, separation: 2_400)
+                if candidates.isEmpty {
+                    consume(upToLocal: searchEnd, plan: plan, pair: pair)
+                    trim()
+                    return
                 }
-                let coarse = correlate(
-                    local: local,
-                    template: plan.chirp,
-                    templateEnergy: plan.chirpEnergyCoarse,
-                    step: plan.coarseStep
-                )
-                if coarse >= 0.35 {
-                    let refined = bestOffset(
-                        template: plan.chirp,
-                        energy: plan.chirpEnergy,
-                        around: local,
-                        radius: plan.coarseHop,
-                        step: 1
-                    )
-                    if refined.score >= 0.5 {
-                        let chirpStart = searchFrom + refined.offset
-                        let nominal = chirpStart + plan.chirp.count + plan.gap
-                        let bodyLocal = nominal - emitted + plan.cp
-                        let aligned = bestOffset(
-                            template: plan.trainingBody,
-                            energy: plan.trainingEnergy,
-                            around: bodyLocal,
-                            radius: plan.alignRadius,
-                            step: 1
-                        )
-                        let symbolStart = bodyLocal + aligned.offset - plan.cp
-                        if aligned.score >= 0.35,
-                           let demod = OFDMModem.demodulate(window: window, symbolStart: symbolStart, plan: plan) {
-                            accept(demod, chirpAbsolute: chirpStart)
-                            searchFrom = emitted + symbolStart + (1 + plan.dataCounts.count) * plan.symbolSamples
-                            trim()
-                            flushWindowLog()
-                            continue
-                        }
+                var accepted = false
+                var rejectedLocal = localStart
+                for candidate in candidates {
+                    guard OFDMModem.naiserLock(samples: audio, peakIndex: candidate) != nil else {
+                        rejectedLocal = max(rejectedLocal, candidate + 2_400)
+                        continue
                     }
+                    // evalSegv2 用相关峰当下标，Naiser 只判断这个峰是否成立。
+                    let symbolStart = candidate + plan.preamble.count + plan.gap
+                    let packetEndLocal = symbolStart + symbolCount * plan.symbolSamples
+                    if packetEndLocal > audio.count {
+                        consume(upToLocal: candidate, plan: plan, pair: pair)
+                        return
+                    }
+                    if let demod = OFDMModem.demodulate(window: audio, symbolStart: symbolStart, plan: plan) {
+                        accept(demod, preambleAbsolute: emitted + candidate)
+                        let packetEnd = emitted + symbolStart + symbolCount * plan.symbolSamples
+                        noteSkipped(from: searchFrom, to: packetEnd)
+                        searchFrom = packetEnd
+                        trim()
+                        flushWindowLog()
+                        accepted = true
+                        break
+                    }
+                    rejectedLocal = max(rejectedLocal, candidate + 2_400)
                 }
+                if accepted { continue }
+                let nextLocal = min(rejectedLocal, searchEnd)
+                if emitted + nextLocal <= searchFrom {
+                    consume(upToLocal: searchEnd, plan: plan, pair: pair)
+                    trim()
+                    return
+                }
+                consume(upToLocal: nextLocal, plan: plan, pair: pair)
+                trim()
+            }
+        }
+
+        private func filteredWindow(low: Double, high: Double, preamble: [Float]) -> [Float] {
+            if heardCount != window.count || heardLow != low || heardHigh != high {
+                heard = OFDMModem.bandpass(window, lowHz: low, highHz: high, sampleRate: sampleRate)
+                correlation = OFDMModem.correlate(signal: heard, template: preamble)
+                heardCount = window.count
+                heardLow = low
+                heardHigh = high
+            }
+            return heard
+        }
+
+        /// getCandidateLocs：只保留正峰，取最强的 3 个，彼此至少隔开 separation。
+        private func candidateLocals(from: Int, through: Int, separation: Int) -> [Int] {
+            guard through >= from, !correlation.isEmpty else { return [] }
+            var work = correlation
+            var chosen: [Int] = []
+            let upper = min(through, work.count - 1)
+            while chosen.count < 3 {
+                var best = Float(0)
+                var bestAt = -1
+                var index = from
+                while index <= upper {
+                    if work[index] > best {
+                        best = work[index]
+                        bestAt = index
+                    }
+                    index += 1
+                }
+                guard bestAt >= 0 else { break }
+                chosen.append(bestAt)
+                let low = max(0, bestAt - separation)
+                let high = min(work.count, bestAt + separation + 1)
+                for index in low..<high {
+                    work[index] = 0
+                }
+            }
+            return chosen.sorted()
+        }
+
+        private func consume(upToLocal: Int, plan: OFDMModem.Plan, pair: (Double, Double)) {
+            let target = emitted + upToLocal
+            while searchFrom + plan.coarseHop <= target {
+                let local = searchFrom - emitted
+                observeHop(local: local, plan: plan, pair: pair)
                 searchFrom += plan.coarseHop
             }
         }
 
-        private func accept(_ demod: OFDMModem.Demodulated, chirpAbsolute: Int) {
+        private func noteSkipped(from: Int, to: Int) {
+            let skipped = to - from
+            guard skipped > 0 else { return }
+            notePeak(WindowReading(snrDB: -10, ratioDB: 0), hopSamples: skipped)
+        }
+
+        private func observeHop(local: Int, plan: OFDMModem.Plan, pair: (Double, Double)) {
+            hopCounter += 1
+            if hopCounter % 4 == 0, local >= 0, local + 384 <= window.count {
+                let reading = SignalAnalyzer.measureWindow(
+                    samples: window[local..<(local + 384)],
+                    sampleRate: sampleRate,
+                    f0: pair.0,
+                    f1: pair.1
+                )
+                notePeak(reading, hopSamples: plan.coarseHop)
+            } else {
+                notePeak(WindowReading(snrDB: -10, ratioDB: 0), hopSamples: plan.coarseHop)
+            }
+        }
+
+        private func accept(_ demod: OFDMModem.Demodulated, preambleAbsolute: Int) {
             guard demod.bits.count == PacketLayout.bitCount else { return }
-            firstBitDate = callbackDate(absoluteSample: chirpAbsolute)
+            firstBitDate = callbackDate(absoluteSample: preambleAbsolute)
             firstBitWall = Date()
             frameReadings = demod.readings.map { WindowReading(snrDB: $0.snrDB, ratioDB: $0.ratioDB) }
             bits = demod.bits
@@ -202,42 +272,6 @@ enum SignalAnalyzer {
                 cachedHigh = high
             }
             return cachedPlan
-        }
-
-        private func correlate(local: Int, template: [Float], templateEnergy: Double, step: Int) -> Double {
-            let stride = max(1, step)
-            guard local >= 0, local + template.count <= window.count, templateEnergy > 0 else { return 0 }
-            var dot = 0.0
-            var energy = 0.0
-            var index = 0
-            while index < template.count {
-                let sample = Double(window[local + index])
-                dot += sample * Double(template[index])
-                energy += sample * sample
-                index += stride
-            }
-            let denominator = (energy * templateEnergy).squareRoot()
-            guard denominator > 1e-8 else { return 0 }
-            return dot / denominator
-        }
-
-        private func bestOffset(
-            template: [Float],
-            energy: Double,
-            around: Int,
-            radius: Int,
-            step: Int
-        ) -> (offset: Int, score: Double) {
-            var bestOffset = 0
-            var bestScore = -1.0
-            for offset in -radius...radius {
-                let score = correlate(local: around + offset, template: template, templateEnergy: energy, step: step)
-                if score > bestScore {
-                    bestScore = score
-                    bestOffset = offset
-                }
-            }
-            return (bestOffset, bestScore)
         }
 
         private func finalizeFrame() {
@@ -402,7 +436,7 @@ enum SignalAnalyzer {
         }
 
         private func trim() {
-            let lookback = cachedPlan?.chirp.count ?? 0
+            let lookback = cachedPlan?.preamble.count ?? 0
             let dropTo = searchFrom - lookback
             if dropTo > emitted {
                 removePrefix(dropTo - emitted)

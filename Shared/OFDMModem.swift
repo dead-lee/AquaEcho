@@ -1,26 +1,33 @@
+import Accelerate
 import Foundation
 
-/// watercomms 的数据通路：线性调频对齐，差分 BPSK-OFDM，循环前缀，频域均衡。
+/// watercomms 的数据通路：Naiser 前导对齐，差分 BPSK-OFDM，循环前缀，频域均衡。
 /// 载荷 bit 的排列不变。0 映射到子载波实部 +1，1 映射到 −1。
 enum OFDMModem {
     static let playbackAmplitude: Float = 0.98
+    /// Naiser.java 的 PN、Nu、N0。8 段有用信号之间和末尾各留 N0 点静音。
+    static let naiserPN: [Float] = [1, -1, -1, -1, -1, -1, 1, -1]
+    static let naiserNu = 960
+    static let naiserN0 = 240
+    static let naiserThreshold = 0.6
+    static let naiserWindow = 1_200
+    static let naiserStep = 8
+    /// find_symbol.m 的 fir1 阶数，群延迟是阶数的一半。
+    static let filterOrder = 96
+    static let filterDelay = filterOrder / 2
 
     struct Plan {
         var sampleRate: Double
         var ns: Int
         var cp: Int
         var gap: Int
-        var chirp: [Float]
-        var chirpEnergy: Double
-        var chirpEnergyCoarse: Double
-        var coarseStep: Int
+        var preamble: [Float]
+        var lowHz: Double
+        var highHz: Double
         var coarseHop: Int
-        var alignRadius: Int
         var carriers: [Int]
         var noiseBins: [Int]
         var trainingBits: [Bool]
-        var trainingBody: [Float]
-        var trainingEnergy: Double
         var dataCounts: [Int]
         var symbolSamples: Int
         var packetSamples: Int
@@ -43,7 +50,6 @@ enum OFDMModem {
         var cp = max(0, Int((config.cyclicPrefixMs / 1_000 * rate).rounded()))
         cp = min(cp, ns / 4)
         let gap = max(0, Int((config.silenceDurationMs / 1_000 * rate).rounded()))
-        let chirpCount = max(1, Int((config.chirpDurationMs / 1_000 * rate).rounded()))
         let spacing = rate / Double(ns)
         var lowBin = Int((min(f0, f1) / spacing).rounded())
         var highBin = Int((max(f0, f1) / spacing).rounded()) - 1
@@ -53,27 +59,24 @@ enum OFDMModem {
         let carriers = Array(lowBin...highBin)
         let noiseBins = noiseBins(around: lowBin...highBin, nyquist: nyquist)
         let training = trainingBits(count: carriers.count)
-        let body = synthesize(bits: training, carriers: carriers, ns: ns)
         let dataCounts = split(bitCount: max(0, bitCount), carriers: carriers.count)
         let symbolSamples = cp + ns
-        let packetSamples = chirpCount + gap + (1 + dataCounts.count) * symbolSamples
-        let chirp = chirp(f0: min(f0, f1), f1: max(f0, f1), count: chirpCount, sampleRate: rate)
+        let lowHz = min(f0, f1)
+        let highHz = max(f0, f1)
+        let preamble = naiserPreamble(f0: lowHz, f1: highHz, sampleRate: rate)
+        let packetSamples = preamble.count + gap + (1 + dataCounts.count) * symbolSamples
         return Plan(
             sampleRate: rate,
             ns: ns,
             cp: cp,
             gap: gap,
-            chirp: chirp,
-            chirpEnergy: energy(chirp, step: 1),
-            chirpEnergyCoarse: energy(chirp, step: 4),
-            coarseStep: 4,
+            preamble: preamble,
+            lowHz: lowHz,
+            highHz: highHz,
             coarseHop: max(8, Int((0.0005 * rate).rounded())),
-            alignRadius: max(cp, Int((0.002 * rate).rounded())),
             carriers: carriers,
             noiseBins: noiseBins,
             trainingBits: training,
-            trainingBody: body,
-            trainingEnergy: energy(body, step: 1),
             dataCounts: dataCounts,
             symbolSamples: symbolSamples,
             packetSamples: packetSamples
@@ -89,12 +92,13 @@ enum OFDMModem {
         let plan = plan(f0: f0, f1: f1, config: config, bitCount: bits.count)
         var output: [Float] = []
         output.reserveCapacity(plan.packetSamples)
-        output.append(contentsOf: plan.chirp)
+        output.append(contentsOf: plan.preamble)
         if plan.gap > 0 {
             output.append(contentsOf: repeatElement(0, count: plan.gap))
         }
         var previous = plan.trainingBits
-        output.append(contentsOf: withPrefix(plan.trainingBody, cp: plan.cp))
+        let trainingBody = synthesize(bits: plan.trainingBits, carriers: plan.carriers, ns: plan.ns)
+        output.append(contentsOf: withPrefix(trainingBody, cp: plan.cp))
         var cursor = 0
         for count in plan.dataCounts {
             var data = Array(bits[cursor..<(cursor + count)])
@@ -250,22 +254,202 @@ enum OFDMModem {
         return output
     }
 
-    private static func chirp(f0: Double, f1: Double, count: Int, sampleRate: Double) -> [Float] {
-        guard count > 0, sampleRate > 0 else { return [] }
-        var phase = 0.0
+    /// 带内等幅余弦重复 8 段，符号按 Naiser 的 PN，段间和末尾是 N0 点静音。
+    private static func naiserPreamble(f0: Double, f1: Double, sampleRate: Double) -> [Float] {
+        let spacing = sampleRate / Double(naiserNu)
+        var lowBin = Int((f0 / spacing).rounded())
+        var highBin = Int((f1 / spacing).rounded()) - 1
+        let nyquist = naiserNu / 2 - 1
+        lowBin = min(max(lowBin, 1), nyquist)
+        highBin = min(max(highBin, lowBin), nyquist)
+        let carriers = Array(lowBin...highBin)
+        let base = synthesize(
+            bits: Array(repeating: false, count: carriers.count),
+            carriers: carriers,
+            ns: naiserNu
+        )
         var output: [Float] = []
-        output.reserveCapacity(count)
-        let twoPi = 2 * Double.pi
-        for index in 0..<count {
-            output.append(playbackAmplitude * Float(sin(phase)))
-            let fraction = Double(index) / Double(count)
-            let frequency = f0 + (f1 - f0) * fraction
-            phase += twoPi * frequency / sampleRate
-            if phase >= twoPi {
-                phase -= twoPi
+        output.reserveCapacity(naiserPN.count * (naiserNu + naiserN0))
+        for sign in naiserPN {
+            for sample in base {
+                output.append(sign * sample)
             }
+            output.append(contentsOf: repeatElement(0, count: naiserN0))
         }
         return output
+    }
+
+    /// find_symbol.m：96 阶 Hamming 带通，低频比频带低 200 Hz，高频停在频带上沿。补偿群延迟后，下标与输入对齐。
+    static func bandpass(_ samples: [Float], lowHz: Double, highHz: Double, sampleRate: Double) -> [Float] {
+        guard samples.count > filterDelay, sampleRate > 0 else { return samples }
+        let taps = bandpassTaps(lowHz: lowHz, highHz: highHz, sampleRate: sampleRate)
+        var filtered = [Float](repeating: 0, count: samples.count)
+        let order = taps.count - 1
+        for index in samples.indices {
+            var acc = 0.0
+            let start = max(0, index - order)
+            for tapIndex in start...index {
+                acc += Double(samples[tapIndex]) * taps[index - tapIndex]
+            }
+            let aligned = index - filterDelay
+            if aligned >= 0 {
+                filtered[aligned] = Float(acc)
+            }
+        }
+        return filtered
+    }
+
+    /// 前导和带通后的录音做线性相关，对应 xcorr_helper。返回值的下标就是前导起点，只用于找正峰位置。
+    static func correlate(signal: [Float], template: [Float]) -> [Float] {
+        let count = signal.count - template.count + 1
+        guard count > 0, !template.isEmpty else { return [] }
+        let size = 1 << Int(ceil(log2(Double(signal.count + template.count - 1))))
+        let log2n = vDSP_Length(log2(Double(size)))
+        guard let fft = vDSP.FFT(log2n: log2n, radix: .radix2, ofType: DSPSplitComplex.self) else { return [] }
+        var signalReal = signal + [Float](repeating: 0, count: size - signal.count)
+        var signalImag = [Float](repeating: 0, count: size)
+        var templateReal = template + [Float](repeating: 0, count: size - template.count)
+        var templateImag = [Float](repeating: 0, count: size)
+        signalReal.withUnsafeMutableBufferPointer { signalRealPointer in
+            signalImag.withUnsafeMutableBufferPointer { signalImagPointer in
+                templateReal.withUnsafeMutableBufferPointer { templateRealPointer in
+                    templateImag.withUnsafeMutableBufferPointer { templateImagPointer in
+                        guard let signalRealBase = signalRealPointer.baseAddress,
+                              let signalImagBase = signalImagPointer.baseAddress,
+                              let templateRealBase = templateRealPointer.baseAddress,
+                              let templateImagBase = templateImagPointer.baseAddress else { return }
+                        var signalSplit = DSPSplitComplex(realp: signalRealBase, imagp: signalImagBase)
+                        var templateSplit = DSPSplitComplex(realp: templateRealBase, imagp: templateImagBase)
+                        fft.forward(input: signalSplit, output: &signalSplit)
+                        fft.forward(input: templateSplit, output: &templateSplit)
+                        for index in 0..<size {
+                            let real = signalRealPointer[index]
+                            let imag = signalImagPointer[index]
+                            let kernelReal = templateRealPointer[index]
+                            let kernelImag = templateImagPointer[index]
+                            signalRealPointer[index] = real * kernelReal + imag * kernelImag
+                            signalImagPointer[index] = imag * kernelReal - real * kernelImag
+                        }
+                        fft.inverse(input: signalSplit, output: &signalSplit)
+                    }
+                }
+            }
+        }
+        return Array(signalReal.prefix(count))
+    }
+
+    /// Naiser_check_valid：在相关峰前后 1200 点里用步长 8 算差分相关，过 0.6 后取 85% 峰宽的中点。
+    static func naiserLock(samples: [Float], peakIndex: Int) -> (start: Int, score: Double)? {
+        let preambleLength = naiserPN.count * (naiserNu + naiserN0)
+        let from = max(0, peakIndex - naiserWindow)
+        let to = min(peakIndex + naiserWindow, samples.count - preambleLength)
+        guard from <= to else { return nil }
+        var scores: [(index: Int, score: Double)] = []
+        scores.reserveCapacity((to - from) / naiserStep + 2)
+        var index = from
+        var bestOffset = 0
+        var bestScore = -Double.infinity
+        while index <= to {
+            let score = naiserMetric(samples, start: index)
+            if score > bestScore {
+                bestScore = score
+                bestOffset = scores.count
+            }
+            scores.append((index, score))
+            index += naiserStep
+        }
+        guard bestScore >= naiserThreshold, !scores.isEmpty else { return nil }
+        let height = bestScore * 0.85
+        var left = bestOffset
+        var right = bestOffset
+        var cursor = bestOffset
+        while cursor + 1 < scores.count {
+            if scores[cursor].score >= height, scores[cursor + 1].score <= height {
+                right = cursor
+                break
+            }
+            cursor += 1
+        }
+        cursor = bestOffset
+        while cursor > 0 {
+            if scores[cursor].score >= height, scores[cursor - 1].score <= height {
+                left = cursor
+                break
+            }
+            cursor -= 1
+        }
+        let start = (scores[left].index + scores[right].index) / 2
+        return (start, bestScore)
+    }
+
+    /// Naiser_corr 的单点：Pd/Rd/(L-1)*L。连续两段同号或反号都按 PN 乘积抵消。
+    static func naiserMetric(_ samples: [Float], start: Int) -> Double {
+        let block = naiserNu + naiserN0
+        let length = naiserPN.count * block
+        guard start >= 0, start + length <= samples.count else { return 0 }
+        var matched = 0.0
+        var energy = 0.0
+        for index in 0..<(naiserPN.count - 1) {
+            let sign = Double(naiserPN[index] * naiserPN[index + 1])
+            let first = start + index * block + naiserN0
+            let second = start + (index + 1) * block + naiserN0
+            var dot = 0.0
+            var secondEnergy = 0.0
+            for sample in 0..<naiserNu {
+                let left = Double(samples[first + sample])
+                let right = Double(samples[second + sample])
+                dot += left * right
+                secondEnergy += right * right
+            }
+            matched += sign * dot
+            if index == 0 {
+                var firstEnergy = 0.0
+                for sample in 0..<naiserNu {
+                    let left = Double(samples[first + sample])
+                    firstEnergy += left * left
+                }
+                energy += firstEnergy + secondEnergy
+            } else {
+                energy += secondEnergy
+            }
+        }
+        guard energy > 1e-12 else { return 0 }
+        return matched / energy / Double(naiserPN.count - 1) * Double(naiserPN.count)
+    }
+
+    private static func bandpassTaps(lowHz: Double, highHz: Double, sampleRate: Double) -> [Double] {
+        let nyquist = sampleRate / 2
+        let low = min(max(lowHz - 200, 50), nyquist - 200)
+        let high = min(max(highHz, low + 100), nyquist - 50)
+        let order = filterOrder
+        var taps = [Double](repeating: 0, count: order + 1)
+        let lowAngle = (low / nyquist) * Double.pi
+        let highAngle = (high / nyquist) * Double.pi
+        let center = order / 2
+        for index in 0...order {
+            let offset = index - center
+            let window = 0.54 - 0.46 * cos(2 * Double.pi * Double(index) / Double(order))
+            if offset == 0 {
+                taps[index] = (highAngle - lowAngle) / Double.pi * window
+            } else {
+                let numerator = sin(highAngle * Double(offset)) - sin(lowAngle * Double(offset))
+                taps[index] = numerator / (Double.pi * Double(offset)) * window
+            }
+        }
+        let mid = (low + high) / 2
+        let omega = 2 * Double.pi * mid / sampleRate
+        var real = 0.0
+        var imag = 0.0
+        for index in taps.indices {
+            real += taps[index] * cos(omega * Double(index))
+            imag -= taps[index] * sin(omega * Double(index))
+        }
+        let gain = (real * real + imag * imag).squareRoot()
+        guard gain > 1e-12 else { return taps }
+        for index in taps.indices {
+            taps[index] /= gain
+        }
+        return taps
     }
 
     private static func trainingBits(count: Int) -> [Bool] {
@@ -299,18 +483,6 @@ enum OFDMModem {
             }
         }
         return bins.isEmpty ? [1] : bins
-    }
-
-    private static func energy(_ samples: [Float], step: Int) -> Double {
-        let stride = max(1, step)
-        var total = 0.0
-        var index = 0
-        while index < samples.count {
-            let sample = Double(samples[index])
-            total += sample * sample
-            index += stride
-        }
-        return total
     }
 
     private static func mean(_ values: [Double]) -> Double {

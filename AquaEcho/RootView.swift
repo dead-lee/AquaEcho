@@ -208,7 +208,6 @@ struct ConfigScreen: View {
                 Section("包") {
                     numberField("符号时长", unit: "ms", value: $model.config.symbolDurationMs)
                     numberField("循环前缀", unit: "ms", value: $model.config.cyclicPrefixMs)
-                    numberField("线性调频", unit: "ms", value: $model.config.chirpDurationMs)
                     numberField("静音时长", unit: "ms", value: $model.config.silenceDurationMs)
                     HStack {
                         Text("重复次数")
@@ -223,7 +222,7 @@ struct ConfigScreen: View {
                     }
                     numberField("前导静音", unit: "ms", value: $model.config.leadSilenceMs)
                     numberField("结尾静音", unit: "ms", value: $model.config.trailSilenceMs)
-                    Text("符号时长是有用符号长度。循环前缀加在每个符号前面。线性调频用来对齐，静音时长是调频和第一个符号之间的间隔。")
+                    Text("符号时长是有用符号长度。循环前缀加在每个符号前面。前导是 8 段 Naiser。静音时长是前导和第一个符号之间的间隔。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
