@@ -1,7 +1,7 @@
 import Foundation
 
-/// 覆盖 56 bit 数据的扩展汉明码，校验 8 bit，能纠正 1 bit。
-/// 数据比特按从低到高的顺序放进汉明位置里不是 2 的幂的那些位置；7 个汉明校验位加 1 个整体偶校验。
+/// 覆盖整包 64 bit 的扩展汉明码，最多纠正 1 bit。
+/// 56 个数据比特放进汉明位置里不是 2 的幂的那些位置，8 bit 校验含 7 个汉明位和 1 个整体偶校验。
 enum ExtendedHamming {
     enum Status {
         case clean

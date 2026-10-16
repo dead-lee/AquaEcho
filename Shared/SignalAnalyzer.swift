@@ -17,7 +17,7 @@ enum SignalAnalyzer {
         private let lock = NSLock()
         private var sampleRate = 0.0
         private var chunkDate = Date()
-        private var burstDate = Date()
+        private var chunkMarks: [ChunkMark] = []
         private var window: [Float] = []
         private var emitted = 0
         private var cursor = 0
@@ -43,6 +43,7 @@ enum SignalAnalyzer {
                 if self.sampleRate == 0 { self.sampleRate = sampleRate }
                 chunkDate = date
                 window.append(contentsOf: samples)
+                chunkMarks.append(ChunkMark(absoluteEnd: emitted + window.count, date: date))
                 scan()
                 trim()
                 retainedSampleCount = window.count
@@ -78,6 +79,7 @@ enum SignalAnalyzer {
                 pendingPackets = [:]
                 pendingHits = [:]
                 window.removeAll(keepingCapacity: false)
+                chunkMarks.removeAll(keepingCapacity: false)
                 retainedSampleCount = 0
                 cursor = 0
                 inBurst = false
@@ -144,7 +146,6 @@ enum SignalAnalyzer {
                         highRun += 1
                         if highRun >= 2 {
                             inBurst = true
-                            burstDate = chunkDate
                             burstLow = frequencies.0
                             burstHigh = frequencies.1
                             lowRun = 0
@@ -179,22 +180,33 @@ enum SignalAnalyzer {
             let length = to - burstStart
             let low = burstLow
             let high = burstHigh
-            let receiveDate = burstDate
             inBurst = false
             highRun = 0
             lowRun = 0
             guard length >= signalNeed / 2, to > from, sampleRate > 0 else {
                 removePrefix(max(to, 1))
                 cursor = 0
+                queuedLogs.append(SignalAnalyzer.burstLine(decoded: .failed, milliseconds: 0, match: "解调失败"))
                 return
             }
+            let absoluteFrom = emitted + from
             let slice = Array(window[from..<to])
+            let demodStarted = Date()
+            let decoded = SignalAnalyzer.demodulatedPayload(
+                samples: slice,
+                sampleRate: sampleRate,
+                f0: low,
+                f1: high,
+                symbolSeconds: config.symbolDurationMs / 1_000
+            )
+            let demodEndDate = Date()
+            let demodMilliseconds = max(0, Int((demodEndDate.timeIntervalSince(demodStarted) * 1_000).rounded()))
+            let receiveDate = decoded.onsetIndex.map { callbackDate(absoluteSample: absoluteFrom + $0) } ?? chunkDate
             removePrefix(to)
             cursor = 0
             let trailSamples = Int((config.trailSilenceMs / 1_000 * sampleRate).rounded())
             removePrefix(min(window.count, symbol * 3, max(0, trailSamples / 2)))
             scheduleIndex += 1
-            let demodStarted = Date()
             let fit = SignalAnalyzer.bestBurst(
                 region: slice,
                 sampleRate: sampleRate,
@@ -203,16 +215,6 @@ enum SignalAnalyzer {
                 signalSamples: max(symbol, Int(config.expectedSignalSeconds * sampleRate)),
                 window: symbol
             )
-            let decoded = SignalAnalyzer.demodulatedPayload(
-                samples: slice,
-                sampleRate: sampleRate,
-                burstStart: fit.start,
-                f0: low,
-                f1: high,
-                symbolSeconds: config.symbolDurationMs / 1_000
-            )
-            let demodEndDate = Date()
-            let demodMilliseconds = max(0, Int((demodEndDate.timeIntervalSince(demodStarted) * 1_000).rounded()))
             let hit = Hit(
                 payload: decoded.payload,
                 aligned: decoded.aligned,
@@ -230,12 +232,27 @@ enum SignalAnalyzer {
                 decodedSequence: decoded.sequence,
                 corrected: decoded.corrected
             )
-            if let key = hit.matchKey, let packet = pendingPackets.removeValue(forKey: key) {
-                record(match(packet: packet, hit: hit))
-            } else if let key = hit.matchKey, pendingHits[key] == nil {
-                pendingHits[key] = hit
+            var matched: SentPacket?
+            if decoded.aligned, let key = hit.matchKey {
+                if let packet = pendingPackets.removeValue(forKey: key) {
+                    matched = packet
+                } else if pendingHits[key] == nil {
+                    pendingHits[key] = hit
+                }
+            }
+            let matchText = decoded.aligned ? (matched == nil ? "无对应包" : "已匹配") : "解调失败"
+            queuedLogs.append(SignalAnalyzer.burstLine(decoded: decoded, milliseconds: demodMilliseconds, match: matchText))
+            if let matched {
+                record(match(packet: matched, hit: hit))
             }
             queuedLogs.append("包 \(scheduleIndex) 结束后窗口剩余 \(window.count) 样本")
+        }
+
+        private func callbackDate(absoluteSample: Int) -> Date {
+            for mark in chunkMarks where mark.absoluteEnd > absoluteSample {
+                return mark.date
+            }
+            return chunkMarks.last?.date ?? chunkDate
         }
 
         private func listenFrequencies() -> (Double, Double)? {
@@ -285,6 +302,7 @@ enum SignalAnalyzer {
             emitted += n
             cursor = max(0, cursor - n)
             burstStart = max(0, burstStart - n)
+            chunkMarks.removeAll { $0.absoluteEnd <= emitted }
         }
 
         private func trim() {
@@ -442,6 +460,11 @@ enum SignalAnalyzer {
         )
     }
 
+    private struct ChunkMark {
+        var absoluteEnd: Int
+        var date: Date
+    }
+
     private struct DemodOutcome {
         var aligned: Bool
         var payload: Data?
@@ -449,119 +472,104 @@ enum SignalAnalyzer {
         var highHz: Double?
         var sequence: Int?
         var corrected: Bool
+        var onsetIndex: Int?
+        var startOffset: Int?
+
+        static let failed = DemodOutcome(
+            aligned: false,
+            payload: nil,
+            lowHz: nil,
+            highHz: nil,
+            sequence: nil,
+            corrected: false,
+            onsetIndex: nil,
+            startOffset: nil
+        )
     }
 
-    /// 在检出的突发附近滑动符号网格，取 64 bit，用扩展汉明码纠正 1 bit 后再解析。
+    private static func burstLine(decoded: DemodOutcome, milliseconds: Int, match: String) -> String {
+        let status = decoded.aligned ? "成功" : "失败"
+        let offset = decoded.startOffset.map(String.init) ?? "空"
+        let low = decoded.aligned ? (decoded.lowHz.map { String(Int($0.rounded())) } ?? "空") : "空"
+        let high = decoded.aligned ? (decoded.highHz.map { String(Int($0.rounded())) } ?? "空") : "空"
+        let sequence = decoded.aligned ? (decoded.sequence.map(String.init) ?? "空") : "空"
+        let fixed = decoded.corrected ? "是" : "否"
+        return "突发 解调=\(status) 起点偏移=\(offset) 解出低频=\(low) 解出高频=\(high) 解出序号=\(sequence) 纠错=\(fixed) 耗时=\(milliseconds)ms 匹配=\(match)"
+    }
+
+    /// 用 128 样本能量找 onset，再只在 onset 前 200 到后 600 样本内按 8 样本步进找第一个合格起点。
     private static func demodulatedPayload(
         samples: [Float],
         sampleRate: Double,
-        burstStart: Int,
         f0: Double,
         f1: Double,
         symbolSeconds: Double
     ) -> DemodOutcome {
         let symbolSamples = max(1, Int((symbolSeconds * sampleRate).rounded()))
-        let totalBits = PacketLayout.bitCount
-        let frameSamples = symbolSamples * totalBits
-        let empty = DemodOutcome(aligned: false, payload: nil, lowHz: nil, highHz: nil, sequence: nil, corrected: false)
-        guard frameSamples > 0, samples.count >= frameSamples else { return empty }
-
-        let search = max(symbolSamples, Int(0.12 * sampleRate))
-        let coarse = max(1, symbolSamples / 8)
-        guard let coarseBest = bestFrame(
-            samples: samples,
-            sampleRate: sampleRate,
-            center: burstStart,
-            radius: search,
-            step: coarse,
-            symbolSamples: symbolSamples,
-            totalBits: totalBits,
-            f0: f0,
-            f1: f1
-        ) else { return empty }
-        let aligned = bestFrame(
-            samples: samples,
-            sampleRate: sampleRate,
-            center: coarseBest.offset,
-            radius: coarse,
-            step: 1,
-            symbolSamples: symbolSamples,
-            totalBits: totalBits,
-            f0: f0,
-            f1: f1
-        ) ?? coarseBest
-        guard aligned.rank >= 2 else { return empty }
-        let fields = PacketLayout.decode(aligned.payload)
-        return DemodOutcome(
-            aligned: true,
-            payload: fields.payload,
-            lowHz: fields.lowHz,
-            highHz: fields.highHz,
-            sequence: fields.sequence,
-            corrected: fields.corrected
-        )
-    }
-
-    private struct FrameLock {
-        var offset: Int
-        var rank: Int
-        var margin: Double
-        var payload: Data
-    }
-
-    private static func bestFrame(
-        samples: [Float],
-        sampleRate: Double,
-        center: Int,
-        radius: Int,
-        step: Int,
-        symbolSamples: Int,
-        totalBits: Int,
-        f0: Double,
-        f1: Double
-    ) -> FrameLock? {
-        let frameSamples = totalBits * symbolSamples
-        var best: FrameLock?
-        var offset = center - radius
-        let last = center + radius
-        let stride = max(1, step)
-        while offset <= last {
-            if offset >= 0, offset + frameSamples <= samples.count {
+        let frameSamples = symbolSamples * PacketLayout.bitCount
+        guard frameSamples > 0, let onset = findOnset(samples: samples, sampleRate: sampleRate, f0: f0, f1: f1) else {
+            return .failed
+        }
+        var start = onset - 200
+        let last = onset + 600
+        while start <= last {
+            if start >= 0, start + frameSamples <= samples.count {
                 let read = readFrame(
                     samples: samples,
                     sampleRate: sampleRate,
-                    offset: offset,
-                    count: totalBits,
+                    offset: start,
+                    count: PacketLayout.bitCount,
                     symbolSamples: symbolSamples,
                     f0: f0,
                     f1: f1
                 )
                 let fixed = ExtendedHamming.correct(word: read.word)
-                let lowCode = Int((fixed.word >> 54) & 0x3FF)
-                let highCode = Int((fixed.word >> 44) & 0x3FF)
-                let frequencyMatch = lowCode == PacketLayout.frequencyCode(f0) && highCode == PacketLayout.frequencyCode(f1)
-                let rank: Int
-                if frequencyMatch {
-                    switch fixed.status {
-                    case .clean: rank = 3
-                    case .corrected: rank = 2
-                    case .uncorrectable: rank = 1
+                if fixed.status != .uncorrectable {
+                    let fields = PacketLayout.decode(PacketLayout.data(from: read.word))
+                    if PacketLayout.frequencyCode(fields.lowHz) == PacketLayout.frequencyCode(f0),
+                       PacketLayout.frequencyCode(fields.highHz) == PacketLayout.frequencyCode(f1) {
+                        return DemodOutcome(
+                            aligned: true,
+                            payload: fields.payload,
+                            lowHz: fields.lowHz,
+                            highHz: fields.highHz,
+                            sequence: fields.sequence,
+                            corrected: fields.corrected,
+                            onsetIndex: onset,
+                            startOffset: start - onset
+                        )
                     }
-                } else {
-                    rank = 0
-                }
-                if best == nil || rank > best!.rank || (rank == best!.rank && read.margin > best!.margin) {
-                    best = FrameLock(
-                        offset: offset,
-                        rank: rank,
-                        margin: read.margin,
-                        payload: PacketLayout.data(from: read.word)
-                    )
                 }
             }
-            offset += stride
+            start += 8
         }
-        return best
+        return DemodOutcome(
+            aligned: false,
+            payload: nil,
+            lowHz: nil,
+            highHz: nil,
+            sequence: nil,
+            corrected: false,
+            onsetIndex: onset,
+            startOffset: nil
+        )
+    }
+
+    /// 128 样本窗口上两个目标频率的较大 Goertzel 能量超过 0.02，窗口起点就是 onset。
+    private static func findOnset(samples: [Float], sampleRate: Double, f0: Double, f1: Double) -> Int? {
+        let width = 128
+        guard samples.count >= width else { return nil }
+        var offset = 0
+        while offset + width <= samples.count {
+            let window = samples[offset..<(offset + width)]
+            let low = Goertzel.power(samples: window, sampleRate: sampleRate, frequency: f0)
+            let high = Goertzel.power(samples: window, sampleRate: sampleRate, frequency: f1)
+            if max(low, high) > 0.02 {
+                return offset
+            }
+            offset += width
+        }
+        return nil
     }
 
     private static func readFrame(

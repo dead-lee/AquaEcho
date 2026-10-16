@@ -211,6 +211,7 @@ for sequence in 1...sent.count {
             && line.contains(" 是否纠错=")
             && line.contains(" 纠错后是否通过=是")
     }, "result log \(sequence)")
+    expect(phoneLogs.contains { $0.hasPrefix("突发 解调=成功 ") && $0.contains(" 匹配=无对应包") }, "burst log \(sequence)")
     expect(phoneLogs.contains { $0.hasPrefix("包 \(sequence) 结束后窗口剩余 ") && $0.hasSuffix(" 样本") }, "window log \(sequence)")
 }
 expectEqual(analysisPairs.count, 2, "two frequency pairs")
