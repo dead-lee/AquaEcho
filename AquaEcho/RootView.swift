@@ -280,7 +280,7 @@ struct LogScreen: View {
                     }
                     Button("刷新", action: model.reloadLog)
                 }
-                Section("Documents 里的日志和 CSV") {
+                Section("Documents 里的日志、CSV 和调试录音") {
                     ForEach(RunLog.documentFiles(), id: \.path) { url in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(url.lastPathComponent)

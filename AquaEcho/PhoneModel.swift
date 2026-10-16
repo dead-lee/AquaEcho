@@ -19,6 +19,9 @@ final class PhoneModel: ObservableObject {
 
     private let capture = AudioCapture()
     private let link = PhoneLink()
+    private let recordingLock = NSLock()
+    private var recordingSamples: [Float] = []
+    private var recordingRate = 48_000.0
     private var receiver: SignalAnalyzer.Receiver?
     private var activeConfig = TestConfig()
     private var didScore = false
@@ -113,7 +116,12 @@ final class PhoneModel: ObservableObject {
             }
         }
         receiver = live
-        capture.onSamples = { samples, date, rate in
+        recordingLock.lock()
+        recordingSamples.removeAll(keepingCapacity: false)
+        recordingRate = config.sampleRate
+        recordingLock.unlock()
+        capture.onSamples = { [weak self] samples, date, rate in
+            self?.keepRecording(samples, sampleRate: rate)
             live.ingest(samples, at: date, sampleRate: rate)
         }
         isRunning = true
@@ -200,6 +208,7 @@ final class PhoneModel: ObservableObject {
         capture.onSamples = nil
         capture.stop()
         UIApplication.shared.isIdleTimerDisabled = false
+        writeRecording()
         let scored = receiver?.finish() ?? []
         receiver = nil
         pairs = scored
@@ -222,14 +231,37 @@ final class PhoneModel: ObservableObject {
             let name = url.lastPathComponent
             let csv = name.hasPrefix("AquaEcho_Results_") && name.hasSuffix(".csv")
             let logFile = name.hasPrefix("AquaEcho_Log_") && name.hasSuffix(".txt")
-            if csv || logFile {
+            let recording = name.hasPrefix("AquaEcho_Recording_") && name.hasSuffix(".wav")
+            if csv || logFile || recording {
                 try? FileManager.default.removeItem(at: url)
             }
         }
         csvURL = nil
         RunLog.shared.discardBufferedLines()
         logText = ""
-        cleanupMessage = "已清理 CSV 和日志"
+        cleanupMessage = "已清理 CSV、日志和调试录音"
+    }
+
+    private func keepRecording(_ samples: [Float], sampleRate: Double) {
+        recordingLock.lock()
+        recordingRate = sampleRate
+        recordingSamples.append(contentsOf: samples)
+        recordingLock.unlock()
+    }
+
+    private func writeRecording() {
+        recordingLock.lock()
+        let samples = recordingSamples
+        let rate = recordingRate
+        recordingSamples.removeAll(keepingCapacity: false)
+        recordingLock.unlock()
+        guard !samples.isEmpty else { return }
+        do {
+            let url = try SessionRecording.write(samples: samples, sampleRate: rate)
+            log("调试录音已写入 \(url.lastPathComponent) 采样=\(samples.count) 采样率=\(Int(rate.rounded()))")
+        } catch {
+            log("错误 调试录音没有写入：\(error.localizedDescription)")
+        }
     }
 
     private func log(_ message: String) {

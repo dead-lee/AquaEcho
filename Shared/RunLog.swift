@@ -53,7 +53,7 @@ final class RunLog {
         }
     }
 
-    static func documentFiles(prefixes: [String] = ["AquaEcho_Log_", "AquaEcho_Results_"]) -> [URL] {
+    static func documentFiles(prefixes: [String] = ["AquaEcho_Log_", "AquaEcho_Results_", "AquaEcho_Recording_"]) -> [URL] {
         let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         return urls
