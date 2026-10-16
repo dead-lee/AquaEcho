@@ -234,6 +234,8 @@ final class WatchModel: ObservableObject {
             f0: pair.lowHz,
             f1: pair.highHz,
             sampleRate: config.sampleRate,
+            toneMs: config.toneDurationMs,
+            gapMs: config.silenceDurationMs,
             leadMs: config.leadSilenceMs,
             trailMs: config.trailSilenceMs
         )

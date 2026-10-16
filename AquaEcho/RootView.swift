@@ -207,6 +207,8 @@ struct ConfigScreen: View {
                 }
                 Section("包") {
                     numberField("符号时长", unit: "ms", value: $model.config.symbolDurationMs)
+                    numberField("单音时长", unit: "ms", value: $model.config.toneDurationMs)
+                    numberField("静音时长", unit: "ms", value: $model.config.silenceDurationMs)
                     HStack {
                         Text("重复次数")
                         Spacer(minLength: 8)

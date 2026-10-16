@@ -29,6 +29,10 @@ struct TestConfig: Codable, Equatable {
     /// CPFSK 两个音的间隔。生成频率对时不会低于 1 kHz。
     var pairSeparationHz: Double = 1_000
     var symbolDurationMs: Double = 40
+    /// 每个 bit 的单音时长。发送端读取这一项。
+    var toneDurationMs: Double = 50
+    /// bit 之间的静音时长。发送端读取这一项。
+    var silenceDurationMs: Double = 20
     var repeats: Int = 5
     var leadSilenceMs: Double = 250
     var trailSilenceMs: Double = 350
@@ -44,6 +48,8 @@ struct TestConfig: Codable, Equatable {
         copy.stepHz = copy.stepHz.clamped(to: 50...2_000)
         copy.pairSeparationHz = max(1_000, copy.pairSeparationHz)
         copy.symbolDurationMs = copy.symbolDurationMs.clamped(to: 10...200)
+        copy.toneDurationMs = copy.toneDurationMs.clamped(to: 10...500)
+        copy.silenceDurationMs = copy.silenceDurationMs.clamped(to: 0...500)
         copy.repeats = copy.repeats.clamped(to: 1...30)
         copy.leadSilenceMs = copy.leadSilenceMs.clamped(to: 50...1_000)
         copy.trailSilenceMs = copy.trailSilenceMs.clamped(to: 50...1_500)
@@ -63,10 +69,11 @@ struct TestConfig: Codable, Equatable {
         return pairs
     }
 
-    /// 不含前后静音的信号时长。每个 bit 固定 40 ms 单音加 15 ms 静音。
+    /// 不含前后静音的信号时长。每个 bit 是单音时长加静音时长。
     var expectedSignalSeconds: Double {
+        let config = normalized
         let bits = Double(PacketLayout.bitCount)
-        return bits * (CPFSKSynth.toneMilliseconds + CPFSKSynth.gapMilliseconds) / 1_000
+        return bits * (config.toneDurationMs + config.silenceDurationMs) / 1_000
     }
 
     var estimatedTestSeconds: Double {
@@ -74,6 +81,55 @@ struct TestConfig: Codable, Equatable {
         let count = Double(config.plannedPairs().count * config.repeats)
         let each = config.expectedSignalSeconds + config.leadSilenceMs / 1_000 + config.trailSilenceMs / 1_000
         return count * each
+    }
+}
+
+extension TestConfig {
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case freqMinHz
+        case freqMaxHz
+        case stepHz
+        case pairSeparationHz
+        case symbolDurationMs
+        case toneDurationMs
+        case silenceDurationMs
+        case repeats
+        case leadSilenceMs
+        case trailSilenceMs
+        case sampleRate
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try container.decodeIfPresent(TestMode.self, forKey: .mode) ?? .cpfsk
+        freqMinHz = try container.decodeIfPresent(Double.self, forKey: .freqMinHz) ?? 15_000
+        freqMaxHz = try container.decodeIfPresent(Double.self, forKey: .freqMaxHz) ?? 20_000
+        stepHz = try container.decodeIfPresent(Double.self, forKey: .stepHz) ?? 500
+        pairSeparationHz = try container.decodeIfPresent(Double.self, forKey: .pairSeparationHz) ?? 1_000
+        symbolDurationMs = try container.decodeIfPresent(Double.self, forKey: .symbolDurationMs) ?? 40
+        toneDurationMs = try container.decodeIfPresent(Double.self, forKey: .toneDurationMs) ?? 50
+        silenceDurationMs = try container.decodeIfPresent(Double.self, forKey: .silenceDurationMs) ?? 20
+        repeats = try container.decodeIfPresent(Int.self, forKey: .repeats) ?? 5
+        leadSilenceMs = try container.decodeIfPresent(Double.self, forKey: .leadSilenceMs) ?? 250
+        trailSilenceMs = try container.decodeIfPresent(Double.self, forKey: .trailSilenceMs) ?? 350
+        sampleRate = try container.decodeIfPresent(Double.self, forKey: .sampleRate) ?? 48_000
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(mode, forKey: .mode)
+        try container.encode(freqMinHz, forKey: .freqMinHz)
+        try container.encode(freqMaxHz, forKey: .freqMaxHz)
+        try container.encode(stepHz, forKey: .stepHz)
+        try container.encode(pairSeparationHz, forKey: .pairSeparationHz)
+        try container.encode(symbolDurationMs, forKey: .symbolDurationMs)
+        try container.encode(toneDurationMs, forKey: .toneDurationMs)
+        try container.encode(silenceDurationMs, forKey: .silenceDurationMs)
+        try container.encode(repeats, forKey: .repeats)
+        try container.encode(leadSilenceMs, forKey: .leadSilenceMs)
+        try container.encode(trailSilenceMs, forKey: .trailSilenceMs)
+        try container.encode(sampleRate, forKey: .sampleRate)
     }
 }
 

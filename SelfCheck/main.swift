@@ -62,14 +62,28 @@ for index in 1..<pairs.count {
     expect(abs(step - 500) < 0.1, "step \(step)")
 }
 
-// MARK: - 每个 bit 是 40 ms 单音加 15 ms 静音
+// MARK: - 每个 bit 是配置里的单音加静音，没有淡入淡出
 
 let rate = 48_000.0
+let fresh = TestConfig()
+expectEqual(fresh.toneDurationMs, 50, "tone default")
+expectEqual(fresh.silenceDurationMs, 20, "silence default")
+expectEqual(fresh.symbolDurationMs, 40, "symbol default unchanged")
 let bits: [Bool] = [false, false, true, true, false]
-let rendered = CPFSKSynth.render(bits: bits, f0: 16_000, f1: 18_000, sampleRate: rate, amplitude: 1)
-let toneSamples = Int((CPFSKSynth.toneMilliseconds / 1_000 * rate).rounded())
-let gapSamples = Int((CPFSKSynth.gapMilliseconds / 1_000 * rate).rounded())
+let rendered = CPFSKSynth.render(
+    bits: bits,
+    f0: 16_000,
+    f1: 18_000,
+    sampleRate: rate,
+    toneMs: fresh.toneDurationMs,
+    gapMs: fresh.silenceDurationMs,
+    amplitude: 1
+)
+let toneSamples = Int((fresh.toneDurationMs / 1_000 * rate).rounded())
+let gapSamples = Int((fresh.silenceDurationMs / 1_000 * rate).rounded())
 expectEqual(rendered.count, bits.count * (toneSamples + gapSamples), "pulse length")
+let quarter = sin(2 * Double.pi * 16_000 / rate)
+expect(abs(Double(rendered[1]) - quarter) < 1e-4, "tone starts at full amplitude")
 var pulseOK = true
 for (index, bit) in bits.enumerated() {
     let origin = index * (toneSamples + gapSamples)
@@ -141,6 +155,8 @@ for pair in testPairs {
             f0: pair.lowHz,
             f1: pair.highHz,
             sampleRate: rate,
+            toneMs: config.toneDurationMs,
+            gapMs: config.silenceDurationMs,
             leadMs: config.leadSilenceMs,
             trailMs: config.trailSilenceMs
         )
@@ -198,7 +214,11 @@ let analysisPairs = live.finish()
 let analysisTransmissions = analysisPairs.flatMap(\.transmissions).sorted { $0.packet.sequence < $1.packet.sequence }
 expectEqual(analysisTransmissions.count, sent.count, "transmission count")
 for (transmission, expected) in zip(analysisTransmissions, expectedStarts) {
-    let actual = Int(transmission.phoneReceiveDate!.timeIntervalSince(started) * rate)
+    guard let phoneReceiveDate = transmission.phoneReceiveDate else {
+        expect(false, "packet \(transmission.packet.sequence) missing date")
+        continue
+    }
+    let actual = Int(phoneReceiveDate.timeIntervalSince(started) * rate)
     let delta = abs(actual - expected)
     expect(delta < Int(0.12 * rate), "packet \(transmission.packet.sequence) callback date within 120 ms, delta samples \(delta)")
     expect(transmission.demodEndDate != nil, "packet \(transmission.packet.sequence) demod end")
@@ -300,7 +320,7 @@ var shortLogs: [String] = []
 shortReceiver.onLog = { shortLogs.append($0) }
 feed(shortReceiver, audio: shortTone, rate: rate, started: started)
 _ = shortReceiver.finish()
-expect(shortLogs.contains { $0.hasPrefix("丢弃脉冲 频率=低 ") && $0.hasSuffix(" 原因=短于30ms") }, "discard short pulse \(shortLogs)")
+expect(shortLogs.contains { $0.hasPrefix("丢弃脉冲 频率=低 ") && $0.hasSuffix(" 原因=短于25ms") }, "discard short pulse \(shortLogs)")
 expect(shortLogs.allSatisfy { !$0.hasPrefix("解调=") }, "short pulse does not finish a frame")
 
 if failures.isEmpty {

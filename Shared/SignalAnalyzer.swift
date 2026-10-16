@@ -4,9 +4,8 @@ import Foundation
 enum SignalAnalyzer {
     private static let toneSNRdB = 6.0
     private static let toneRatioDB = 8.0
-    private static let minPulseMilliseconds = 30.0
-    private static let mergeGapMilliseconds = 10.0
-    private static let hopSamples = 64
+    private static let minPulseMilliseconds = 25.0
+    private static let mergeGapMilliseconds = 12.0
 
     final class Receiver {
         struct Update {
@@ -27,10 +26,10 @@ enum SignalAnalyzer {
         private var window: [Float] = []
         private var emitted = 0
         private var openPulse: OpenPulse?
-        private var streakHigh: Bool?
-        private var streakCount = 0
-        private var streakStart = 0
-        private var streakSamples: [Float] = []
+        private var oppositeHigh: Bool?
+        private var oppositeCount = 0
+        private var oppositeStart = 0
+        private var oppositeSamples: [Float] = []
         private var bits: [Bool] = []
         private var firstBitDate: Date?
         private var firstBitWall: Date?
@@ -85,9 +84,9 @@ enum SignalAnalyzer {
                 if openPulse != nil {
                     closePulse()
                 }
-                streakHigh = nil
-                streakCount = 0
-                streakSamples = []
+                oppositeHigh = nil
+                oppositeCount = 0
+                oppositeSamples = []
                 flushWindowLog()
                 for packet in pendingPackets.values {
                     transmissions.append(SignalAnalyzer.missed(packet))
@@ -140,63 +139,83 @@ enum SignalAnalyzer {
         }
 
         private func scan() {
-            let hop = SignalAnalyzer.hopSamples
+            let analysisSamples = max(1, Int((10.0 / 1_000 * sampleRate).rounded()))
+            let hopSamples = max(1, Int((4.0 / 1_000 * sampleRate).rounded()))
             let mergeGap = max(1, Int((SignalAnalyzer.mergeGapMilliseconds / 1_000 * sampleRate).rounded()))
-            while window.count >= hop {
+            while window.count >= analysisSamples {
                 guard let frequencies = currentPair() else { return }
-                let slice = window[0..<hop]
+                let slice = window[0..<analysisSamples]
                 let reading = SignalAnalyzer.measureWindow(
                     samples: slice,
                     sampleRate: sampleRate,
                     f0: frequencies.0,
                     f1: frequencies.1
                 )
-                notePeak(reading)
+                notePeak(reading, hopSamples: hopSamples)
                 let absStart = emitted
-                let absEnd = emitted + hop
+                // 段的时间用分析窗起点。10 ms 窗会提前看到下一个音，起点到起点才能把 20 ms 静音量成不小于 12 ms 的缺口。
+                let absEnd = absStart
                 let tone = reading.snrDB >= SignalAnalyzer.toneSNRdB && reading.ratioDB >= SignalAnalyzer.toneRatioDB
-                if tone {
+                // 和当前段比，而不是和绝对能量比。静音里两个目标频率的比值偶尔也能过 8 dB，但功率比这段音调低几十 dB，不能拿来续段或切段。
+                let holdsTone = openPulse.map { reading.signalPower >= $0.referencePower * 1e-3 } ?? true
+                if tone && holdsTone {
                     let isHigh = reading.highDominant
-                    if streakHigh == isHigh {
-                        streakCount += 1
-                        streakSamples.append(contentsOf: slice)
+                    if let pulse = openPulse, pulse.isHigh != isHigh {
+                        if oppositeHigh == isHigh {
+                            oppositeCount += 1
+                            oppositeSamples.append(contentsOf: slice)
+                        } else {
+                            oppositeHigh = isHigh
+                            oppositeCount = 1
+                            oppositeStart = absStart
+                            oppositeSamples = Array(slice)
+                        }
+                        if oppositeCount >= 2 {
+                            absorbTone(
+                                isHigh: isHigh,
+                                absStart: oppositeStart,
+                                absEnd: absEnd,
+                                samples: oppositeSamples,
+                                power: reading.signalPower,
+                                mergeGap: mergeGap
+                            )
+                            oppositeHigh = nil
+                            oppositeCount = 0
+                            oppositeSamples = []
+                        }
                     } else {
-                        streakHigh = isHigh
-                        streakCount = 1
-                        streakStart = absStart
-                        streakSamples = Array(slice)
-                    }
-                    // 单个噪声窗也会超过相对门限。凑满三个同频率窗再成段，15 ms 静音里放不进这一段。
-                    if streakCount >= 3 {
+                        oppositeHigh = nil
+                        oppositeCount = 0
+                        oppositeSamples = []
                         absorbTone(
                             isHigh: isHigh,
-                            absStart: streakStart,
+                            absStart: absStart,
                             absEnd: absEnd,
-                            samples: streakSamples,
+                            samples: Array(slice),
+                            power: reading.signalPower,
                             mergeGap: mergeGap
                         )
-                        streakStart = absEnd
-                        streakSamples = []
                     }
                 } else {
-                    streakHigh = nil
-                    streakCount = 0
-                    streakSamples = []
-                    if let pulse = openPulse, absEnd - pulse.toneEnd >= mergeGap {
+                    oppositeHigh = nil
+                    oppositeCount = 0
+                    oppositeSamples = []
+                    if let pulse = openPulse, absStart - pulse.toneEnd >= mergeGap {
                         closePulse()
                     }
                 }
-                removePrefix(hop)
+                removePrefix(hopSamples)
                 flushWindowLog()
             }
         }
 
-        /// 同频率且缺口小于 10 ms 时先并进当前段，时长留到这段真正结束再判断。
-        private func absorbTone(isHigh: Bool, absStart: Int, absEnd: Int, samples: [Float], mergeGap: Int) {
+        /// 同频率且缺口小于 12 ms 时先并进当前段，时长留到这段真正结束再判断。
+        private func absorbTone(isHigh: Bool, absStart: Int, absEnd: Int, samples: [Float], power: Double, mergeGap: Int) {
             if let pulse = openPulse {
                 let gap = absStart - pulse.toneEnd
                 if pulse.isHigh == isHigh && gap < mergeGap {
                     openPulse?.toneEnd = absEnd
+                    openPulse?.referencePower = max(pulse.referencePower, power)
                     openPulse?.samples.append(contentsOf: samples)
                     return
                 }
@@ -207,6 +226,7 @@ enum SignalAnalyzer {
                 start: absStart,
                 toneEnd: absEnd,
                 startDate: callbackDate(absoluteSample: absStart),
+                referencePower: power,
                 samples: samples
             )
         }
@@ -215,10 +235,10 @@ enum SignalAnalyzer {
             guard let pulse = openPulse else { return }
             openPulse = nil
             let minSamples = max(1, Int((SignalAnalyzer.minPulseMilliseconds / 1_000 * sampleRate).rounded()))
+            let durationMs = max(0, Int((Double(pulse.toneEnd - pulse.start) / sampleRate * 1_000).rounded()))
             guard pulse.toneEnd - pulse.start >= minSamples else {
-                let durationMs = max(0, Int((Double(pulse.toneEnd - pulse.start) / sampleRate * 1_000).rounded()))
                 let band = pulse.isHigh ? "高" : "低"
-                queuedLogs.append("丢弃脉冲 频率=\(band) 持续=\(durationMs)ms 原因=短于30ms")
+                queuedLogs.append("丢弃脉冲 频率=\(band) 持续=\(durationMs)ms 原因=短于25ms")
                 return
             }
             if bits.isEmpty {
@@ -321,12 +341,12 @@ enum SignalAnalyzer {
             pendingWindowLogIndex = scheduleIndex
         }
 
-        private func notePeak(_ reading: WindowReading) {
+        private func notePeak(_ reading: WindowReading, hopSamples: Int) {
             if reading.snrDB >= peakSNR {
                 peakSNR = reading.snrDB
                 peakRatio = reading.ratioDB
             }
-            peakSamples += SignalAnalyzer.hopSamples
+            peakSamples += hopSamples
             let samplesPerSecond = max(1, Int(sampleRate.rounded()))
             guard peakSamples >= samplesPerSecond else { return }
             queuedLogs.append(String(
@@ -413,6 +433,7 @@ enum SignalAnalyzer {
             var start: Int
             var toneEnd: Int
             var startDate: Date
+            var referencePower: Double
             var samples: [Float]
         }
     }
@@ -460,6 +481,7 @@ enum SignalAnalyzer {
         var snrDB: Double
         var ratioDB: Double
         var highDominant: Bool = false
+        var signalPower: Double = 0
     }
 
     private static func demodLine(
@@ -499,7 +521,7 @@ enum SignalAnalyzer {
         let noise = max(noisePower, 1e-20)
         let snr = (10 * log10(max(signal, 1e-20) / noise)).clamped(to: -10...80)
         let ratio = (10 * log10(max(signal, 1e-20) / inactive)).clamped(to: 0...60)
-        return WindowReading(snrDB: snr, ratioDB: ratio, highDominant: p1 > p0)
+        return WindowReading(snrDB: snr, ratioDB: ratio, highDominant: p1 > p0, signalPower: signal)
     }
 
     /// 只把明显高于噪声的窗计入 SNR 和区分度，避免前后静音把分数拉低。
