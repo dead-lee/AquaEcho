@@ -201,13 +201,14 @@ struct ConfigScreen: View {
                     numberField("上限", unit: "Hz", value: $model.config.freqMaxHz)
                     numberField("步进", unit: "Hz", value: $model.config.stepHz)
                     numberField("频率间隔", unit: "Hz", value: $model.config.pairSeparationHz)
-                    Text("两个音至少相隔 1 kHz。实际扫描会从下限开始，每次前进一个步进。")
+                    Text("频率间隔是这一对 OFDM 的带宽，至少 1 kHz。扫描从下限开始，每次前进一个步进。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 Section("包") {
                     numberField("符号时长", unit: "ms", value: $model.config.symbolDurationMs)
-                    numberField("单音时长", unit: "ms", value: $model.config.toneDurationMs)
+                    numberField("循环前缀", unit: "ms", value: $model.config.cyclicPrefixMs)
+                    numberField("线性调频", unit: "ms", value: $model.config.chirpDurationMs)
                     numberField("静音时长", unit: "ms", value: $model.config.silenceDurationMs)
                     HStack {
                         Text("重复次数")
@@ -222,7 +223,7 @@ struct ConfigScreen: View {
                     }
                     numberField("前导静音", unit: "ms", value: $model.config.leadSilenceMs)
                     numberField("结尾静音", unit: "ms", value: $model.config.trailSilenceMs)
-                    Text("每次发送都会重新生成 8 字节随机内容，序号写在 CSV 里。")
+                    Text("符号时长是有用符号长度。循环前缀加在每个符号前面。线性调频用来对齐，静音时长是调频和第一个符号之间的间隔。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

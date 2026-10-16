@@ -6,7 +6,7 @@ enum TestMode: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     var title: String {
-        "自定义 CPFSK"
+        "OFDM"
     }
 }
 
@@ -26,13 +26,18 @@ struct TestConfig: Codable, Equatable {
     var freqMinHz: Double = 15_000
     var freqMaxHz: Double = 20_000
     var stepHz: Double = 500
-    /// CPFSK 两个音的间隔。生成频率对时不会低于 1 kHz。
+    /// 这一对 OFDM 占用的带宽。生成频率对时不会低于 1 kHz。
     var pairSeparationHz: Double = 1_000
-    var symbolDurationMs: Double = 40
-    /// 每个 bit 的单音时长。发送端读取这一项。
+    /// 有用符号长度。20 ms 在 48 kHz 下是 960 点。
+    var symbolDurationMs: Double = 20
+    /// 旧字段。OFDM 发送不再读取。
     var toneDurationMs: Double = 30
-    /// bit 之间的静音时长。发送端读取这一项。
+    /// 线性调频和第一个符号之间的间隔。
     var silenceDurationMs: Double = 15
+    /// 循环前缀。1.4 ms 在 48 kHz 下是 67 点。
+    var cyclicPrefixMs: Double = 1.4
+    /// 线性调频同步头的时长。
+    var chirpDurationMs: Double = 100
     var repeats: Int = 5
     var leadSilenceMs: Double = 20
     var trailSilenceMs: Double = 20
@@ -50,6 +55,8 @@ struct TestConfig: Codable, Equatable {
         copy.symbolDurationMs = copy.symbolDurationMs.clamped(to: 10...200)
         copy.toneDurationMs = copy.toneDurationMs.clamped(to: 10...500)
         copy.silenceDurationMs = copy.silenceDurationMs.clamped(to: 0...500)
+        copy.cyclicPrefixMs = copy.cyclicPrefixMs.clamped(to: 0...50)
+        copy.chirpDurationMs = copy.chirpDurationMs.clamped(to: 20...500)
         copy.repeats = copy.repeats.clamped(to: 1...30)
         copy.leadSilenceMs = copy.leadSilenceMs.clamped(to: 0...1_000)
         copy.trailSilenceMs = copy.trailSilenceMs.clamped(to: 0...1_500)
@@ -57,7 +64,7 @@ struct TestConfig: Codable, Equatable {
         return copy
     }
 
-    /// 从下限按步进取出 f，配对 f 与 f+间隔（间隔至少 1 kHz），且两个音都落在扫描范围内。
+    /// 从下限按步进取出 f，配对 f 与 f+带宽（带宽至少 1 kHz），且两端都落在扫描范围内。
     func plannedPairs() -> [PlannedPair] {
         let config = normalized
         var pairs: [PlannedPair] = []
@@ -69,11 +76,13 @@ struct TestConfig: Codable, Equatable {
         return pairs
     }
 
-    /// 不含前后静音的信号时长。每个 bit 是单音时长加静音时长。
+    /// 不含前后静音的信号时长：线性调频、间隔和全部 OFDM 符号。
     var expectedSignalSeconds: Double {
         let config = normalized
-        let bits = Double(PacketLayout.bitCount)
-        return bits * (config.toneDurationMs + config.silenceDurationMs) / 1_000
+        let pair = config.plannedPairs().first
+        let low = pair?.lowHz ?? config.freqMinHz
+        let high = pair?.highHz ?? min(config.freqMaxHz, low + config.pairSeparationHz)
+        return OFDMModem.signalSeconds(f0: low, f1: high, config: config)
     }
 
     var estimatedTestSeconds: Double {
@@ -94,6 +103,8 @@ extension TestConfig {
         case symbolDurationMs
         case toneDurationMs
         case silenceDurationMs
+        case cyclicPrefixMs
+        case chirpDurationMs
         case repeats
         case leadSilenceMs
         case trailSilenceMs
@@ -107,9 +118,11 @@ extension TestConfig {
         freqMaxHz = try container.decodeIfPresent(Double.self, forKey: .freqMaxHz) ?? 20_000
         stepHz = try container.decodeIfPresent(Double.self, forKey: .stepHz) ?? 500
         pairSeparationHz = try container.decodeIfPresent(Double.self, forKey: .pairSeparationHz) ?? 1_000
-        symbolDurationMs = try container.decodeIfPresent(Double.self, forKey: .symbolDurationMs) ?? 40
+        symbolDurationMs = try container.decodeIfPresent(Double.self, forKey: .symbolDurationMs) ?? 20
         toneDurationMs = try container.decodeIfPresent(Double.self, forKey: .toneDurationMs) ?? 30
         silenceDurationMs = try container.decodeIfPresent(Double.self, forKey: .silenceDurationMs) ?? 15
+        cyclicPrefixMs = try container.decodeIfPresent(Double.self, forKey: .cyclicPrefixMs) ?? 1.4
+        chirpDurationMs = try container.decodeIfPresent(Double.self, forKey: .chirpDurationMs) ?? 100
         repeats = try container.decodeIfPresent(Int.self, forKey: .repeats) ?? 5
         leadSilenceMs = try container.decodeIfPresent(Double.self, forKey: .leadSilenceMs) ?? 20
         trailSilenceMs = try container.decodeIfPresent(Double.self, forKey: .trailSilenceMs) ?? 20
@@ -126,6 +139,8 @@ extension TestConfig {
         try container.encode(symbolDurationMs, forKey: .symbolDurationMs)
         try container.encode(toneDurationMs, forKey: .toneDurationMs)
         try container.encode(silenceDurationMs, forKey: .silenceDurationMs)
+        try container.encode(cyclicPrefixMs, forKey: .cyclicPrefixMs)
+        try container.encode(chirpDurationMs, forKey: .chirpDurationMs)
         try container.encode(repeats, forKey: .repeats)
         try container.encode(leadSilenceMs, forKey: .leadSilenceMs)
         try container.encode(trailSilenceMs, forKey: .trailSilenceMs)

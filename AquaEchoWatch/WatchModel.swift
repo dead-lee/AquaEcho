@@ -229,15 +229,11 @@ final class WatchModel: ObservableObject {
 
     private func render(pair: PlannedPair, payload: Data, config: TestConfig) throws -> (samples: [Float], leadSamples: Int) {
         let leadSamples = Int((config.leadSilenceMs / 1_000 * config.sampleRate).rounded())
-        let samples = CPFSKSynth.playback(
+        let samples = OFDMModem.playback(
             bits: PacketLayout.bits(for: payload),
             f0: pair.lowHz,
             f1: pair.highHz,
-            sampleRate: config.sampleRate,
-            toneMs: config.toneDurationMs,
-            gapMs: config.silenceDurationMs,
-            leadMs: config.leadSilenceMs,
-            trailMs: config.trailSilenceMs
+            config: config
         )
         return (samples, leadSamples)
     }

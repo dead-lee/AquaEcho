@@ -1,12 +1,7 @@
 import Foundation
 
-/// 在麦克风回调的滑动窗口里按脉宽收 bit，攒满 64 bit 后校验，不保留整段会话。
+/// 在麦克风回调的滑动窗口里用线性调频找到 OFDM 包，解出 64 bit 后校验，不保留整段会话。
 enum SignalAnalyzer {
-    private static let toneSNRdB = 6.0
-    private static let toneRatioDB = 8.0
-    private static let minPulseMilliseconds = 16.0
-    private static let mergeGapMilliseconds = 6.0
-
     final class Receiver {
         struct Update {
             var transmission: Transmission
@@ -25,12 +20,11 @@ enum SignalAnalyzer {
         private var chunkMarks: [ChunkMark] = []
         private var window: [Float] = []
         private var emitted = 0
-        private var openPulse: OpenPulse?
-        private var oppositeHigh: Bool?
-        private var oppositeCount = 0
-        private var oppositeStart = 0
-        private var oppositeSamples: [Float] = []
-        private var loudPower = 0.0
+        private var searchFrom = 0
+        private var hopCounter = 0
+        private var cachedPlan: OFDMModem.Plan?
+        private var cachedLow = -1.0
+        private var cachedHigh = -1.0
         private var bits: [Bool] = []
         private var firstBitDate: Date?
         private var firstBitWall: Date?
@@ -82,13 +76,6 @@ enum SignalAnalyzer {
 
         func finish() -> [PairScore] {
             let (scores, logs) = locked { () -> ([PairScore], [String]) in
-                if openPulse != nil {
-                    closePulse()
-                }
-                oppositeHigh = nil
-                oppositeCount = 0
-                oppositeSamples = []
-                loudPower = 0
                 flushWindowLog()
                 for packet in pendingPackets.values {
                     transmissions.append(SignalAnalyzer.missed(packet))
@@ -98,8 +85,8 @@ enum SignalAnalyzer {
                 window.removeAll(keepingCapacity: false)
                 chunkMarks.removeAll(keepingCapacity: false)
                 retainedSampleCount = 0
-                openPulse = nil
                 bits.removeAll(keepingCapacity: false)
+                cachedPlan = nil
                 return (SignalAnalyzer.aggregate(transmissions, mode: .cpfsk), drainLogs())
             }
             publish(logs: logs, updates: [])
@@ -122,16 +109,8 @@ enum SignalAnalyzer {
         }
 
         private func publish(logs: [String], updates: [Update]) {
-            if let onLog {
-                for line in logs {
-                    onLog(line)
-                }
-            }
-            if let onUpdate {
-                for update in updates {
-                    onUpdate(update)
-                }
-            }
+            for line in logs { onLog?(line) }
+            for update in updates { onUpdate?(update) }
         }
 
         private func locked<T>(_ body: () -> T) -> T {
@@ -141,142 +120,124 @@ enum SignalAnalyzer {
         }
 
         private func scan() {
-            let analysisSamples = max(1, Int((8.0 / 1_000 * sampleRate).rounded()))
-            let hopSamples = max(1, Int((3.0 / 1_000 * sampleRate).rounded()))
-            let mergeGap = max(1, Int((SignalAnalyzer.mergeGapMilliseconds / 1_000 * sampleRate).rounded()))
-            while window.count >= analysisSamples {
-                guard let frequencies = currentPair() else { return }
-                let slice = window[0..<analysisSamples]
-                let reading = SignalAnalyzer.measureWindow(
-                    samples: slice,
-                    sampleRate: sampleRate,
-                    f0: frequencies.0,
-                    f1: frequencies.1
-                )
-                notePeak(reading, hopSamples: hopSamples)
-                let absStart = emitted
-                let absEnd = absStart + analysisSamples
-                let tone = reading.snrDB >= SignalAnalyzer.toneSNRdB && reading.ratioDB >= SignalAnalyzer.toneRatioDB
-                if let pulse = openPulse,
-                   reading.signalPower < pulse.referencePower * 0.1
-                   || reading.signalPower > pulse.referencePower * 10 {
-                    oppositeHigh = nil
-                    oppositeCount = 0
-                    oppositeSamples = []
-                    closePulse()
-                } else if tone {
-                    let isHigh = reading.highDominant
-                    if openPulse == nil, loudPower > 0, reading.signalPower < loudPower * 0.1 {
-                        // 静音里的超门限窗功率远低于刚结束的音调，不能自己开一段。
-                    } else if let pulse = openPulse, pulse.isHigh != isHigh {
-                        if oppositeHigh == isHigh {
-                            oppositeCount += 1
-                            oppositeSamples.append(contentsOf: slice)
-                        } else {
-                            oppositeHigh = isHigh
-                            oppositeCount = 1
-                            oppositeStart = absStart
-                            oppositeSamples = Array(slice)
-                        }
-                        if oppositeCount >= 3 {
-                            absorbTone(
-                                isHigh: isHigh,
-                                absStart: oppositeStart,
-                                absEnd: absEnd,
-                                samples: oppositeSamples,
-                                power: reading.signalPower,
-                                reading: reading,
-                                mergeGap: mergeGap
-                            )
-                            oppositeHigh = nil
-                            oppositeCount = 0
-                            oppositeSamples = []
-                            loudPower = max(loudPower * 0.5, reading.signalPower)
-                        } else {
-                            openPulse?.toneEnd = absEnd
-                        }
-                    } else {
-                        oppositeHigh = nil
-                        oppositeCount = 0
-                        oppositeSamples = []
-                        absorbTone(
-                            isHigh: isHigh,
-                            absStart: absStart,
-                            absEnd: absEnd,
-                            samples: Array(slice),
-                            power: reading.signalPower,
-                            reading: reading,
-                            mergeGap: mergeGap
-                        )
-                        loudPower = max(loudPower * 0.5, reading.signalPower)
-                    }
+            while true {
+                guard let pair = currentPair(), let plan = currentPlan(low: pair.0, high: pair.1) else { return }
+                let needed = plan.packetSamples + plan.alignRadius + plan.coarseHop
+                guard emitted + window.count >= searchFrom + needed else { return }
+                let local = searchFrom - emitted
+                guard local >= 0 else {
+                    searchFrom = emitted
+                    continue
+                }
+                hopCounter += 1
+                if hopCounter % 4 == 0, local + 384 <= window.count {
+                    let reading = SignalAnalyzer.measureWindow(
+                        samples: window[local..<(local + 384)],
+                        sampleRate: sampleRate,
+                        f0: pair.0,
+                        f1: pair.1
+                    )
+                    notePeak(reading, hopSamples: plan.coarseHop)
                 } else {
-                    oppositeHigh = nil
-                    oppositeCount = 0
-                    oppositeSamples = []
-                    if let pulse = openPulse, absStart - pulse.toneEnd >= mergeGap {
-                        closePulse()
+                    notePeak(WindowReading(snrDB: -10, ratioDB: 0), hopSamples: plan.coarseHop)
+                }
+                let coarse = correlate(
+                    local: local,
+                    template: plan.chirp,
+                    templateEnergy: plan.chirpEnergyCoarse,
+                    step: plan.coarseStep
+                )
+                if coarse >= 0.35 {
+                    let refined = bestOffset(
+                        template: plan.chirp,
+                        energy: plan.chirpEnergy,
+                        around: local,
+                        radius: plan.coarseHop,
+                        step: 1
+                    )
+                    if refined.score >= 0.5 {
+                        let chirpStart = searchFrom + refined.offset
+                        let nominal = chirpStart + plan.chirp.count + plan.gap
+                        let bodyLocal = nominal - emitted + plan.cp
+                        let aligned = bestOffset(
+                            template: plan.trainingBody,
+                            energy: plan.trainingEnergy,
+                            around: bodyLocal,
+                            radius: plan.alignRadius,
+                            step: 1
+                        )
+                        let symbolStart = bodyLocal + aligned.offset - plan.cp
+                        if aligned.score >= 0.35,
+                           let demod = OFDMModem.demodulate(window: window, symbolStart: symbolStart, plan: plan) {
+                            accept(demod, chirpAbsolute: chirpStart)
+                            searchFrom = emitted + symbolStart + (1 + plan.dataCounts.count) * plan.symbolSamples
+                            trim()
+                            flushWindowLog()
+                            continue
+                        }
                     }
                 }
-                removePrefix(hopSamples)
-                flushWindowLog()
+                searchFrom += plan.coarseHop
             }
         }
 
-        /// 同频率且缺口小于 6 ms 时先并进当前段，时长留到这段真正结束再判断。
-        private func absorbTone(
-            isHigh: Bool,
-            absStart: Int,
-            absEnd: Int,
-            samples: [Float],
-            power: Double,
-            reading: WindowReading,
-            mergeGap: Int
-        ) {
-            if let pulse = openPulse {
-                let gap = absStart - pulse.toneEnd
-                if pulse.isHigh == isHigh && gap < mergeGap {
-                    openPulse?.toneEnd = absEnd
-                    openPulse?.referencePower = max(pulse.referencePower, power)
-                    openPulse?.samples.append(contentsOf: samples)
-                    openPulse?.readings.append(reading)
-                    return
+        private func accept(_ demod: OFDMModem.Demodulated, chirpAbsolute: Int) {
+            guard demod.bits.count == PacketLayout.bitCount else { return }
+            firstBitDate = callbackDate(absoluteSample: chirpAbsolute)
+            firstBitWall = Date()
+            frameReadings = demod.readings.map { WindowReading(snrDB: $0.snrDB, ratioDB: $0.ratioDB) }
+            bits = demod.bits
+            finalizeFrame()
+        }
+
+        private func currentPlan(low: Double, high: Double) -> OFDMModem.Plan? {
+            if cachedPlan == nil || cachedLow != low || cachedHigh != high {
+                cachedPlan = OFDMModem.plan(
+                    f0: low,
+                    f1: high,
+                    config: config,
+                    bitCount: PacketLayout.bitCount
+                )
+                cachedLow = low
+                cachedHigh = high
+            }
+            return cachedPlan
+        }
+
+        private func correlate(local: Int, template: [Float], templateEnergy: Double, step: Int) -> Double {
+            let stride = max(1, step)
+            guard local >= 0, local + template.count <= window.count, templateEnergy > 0 else { return 0 }
+            var dot = 0.0
+            var energy = 0.0
+            var index = 0
+            while index < template.count {
+                let sample = Double(window[local + index])
+                dot += sample * Double(template[index])
+                energy += sample * sample
+                index += stride
+            }
+            let denominator = (energy * templateEnergy).squareRoot()
+            guard denominator > 1e-8 else { return 0 }
+            return dot / denominator
+        }
+
+        private func bestOffset(
+            template: [Float],
+            energy: Double,
+            around: Int,
+            radius: Int,
+            step: Int
+        ) -> (offset: Int, score: Double) {
+            var bestOffset = 0
+            var bestScore = -1.0
+            for offset in -radius...radius {
+                let score = correlate(local: around + offset, template: template, templateEnergy: energy, step: step)
+                if score > bestScore {
+                    bestScore = score
+                    bestOffset = offset
                 }
-                closePulse()
             }
-            openPulse = OpenPulse(
-                isHigh: isHigh,
-                start: absStart,
-                toneEnd: absEnd,
-                startDate: callbackDate(absoluteSample: absStart),
-                referencePower: power,
-                samples: samples,
-                readings: [reading]
-            )
-        }
-
-        private func closePulse() {
-            guard let pulse = openPulse else { return }
-            openPulse = nil
-            let minSamples = max(1, Int((SignalAnalyzer.minPulseMilliseconds / 1_000 * sampleRate).rounded()))
-            let durationMs = max(0, Int((Double(pulse.toneEnd - pulse.start) / sampleRate * 1_000).rounded()))
-            guard pulse.toneEnd - pulse.start >= minSamples else {
-                let band = pulse.isHigh ? "高" : "低"
-                queuedLogs.append("丢弃脉冲 频率=\(band) 持续=\(durationMs)ms 原因=短于16ms")
-                return
-            }
-            if bits.isEmpty {
-                firstBitDate = pulse.startDate
-                firstBitWall = Date()
-                frameReadings = []
-            }
-            bits.append(pulse.isHigh)
-            if !pulse.readings.isEmpty {
-                frameReadings.append(SignalAnalyzer.combine(pulse.readings))
-            }
-            if bits.count == PacketLayout.bitCount {
-                finalizeFrame()
-            }
+            return (bestOffset, bestScore)
         }
 
         private func finalizeFrame() {
@@ -367,16 +328,17 @@ enum SignalAnalyzer {
             }
             peakSamples += hopSamples
             let samplesPerSecond = max(1, Int(sampleRate.rounded()))
-            guard peakSamples >= samplesPerSecond else { return }
-            queuedLogs.append(String(
-                format: "检测峰值 SNR=%.1f 能量比=%.1f",
-                locale: Locale(identifier: "en_US_POSIX"),
-                peakSNR,
-                peakRatio
-            ))
-            peakSNR = -.infinity
-            peakRatio = 0
-            peakSamples -= samplesPerSecond
+            while peakSamples >= samplesPerSecond {
+                queuedLogs.append(String(
+                    format: "检测峰值 SNR=%.1f 能量比=%.1f",
+                    locale: Locale(identifier: "en_US_POSIX"),
+                    peakSNR,
+                    peakRatio
+                ))
+                peakSNR = -.infinity
+                peakRatio = 0
+                peakSamples -= samplesPerSecond
+            }
         }
 
         private func flushWindowLog() {
@@ -440,21 +402,11 @@ enum SignalAnalyzer {
         }
 
         private func trim() {
-            guard openPulse == nil, bits.isEmpty, sampleRate > 0 else { return }
-            let cap = max(8_192, Int((config.expectedSignalSeconds + 1) * sampleRate))
-            if window.count > cap {
-                removePrefix(window.count - cap)
+            let lookback = cachedPlan?.chirp.count ?? 0
+            let dropTo = searchFrom - lookback
+            if dropTo > emitted {
+                removePrefix(dropTo - emitted)
             }
-        }
-
-        private struct OpenPulse {
-            var isHigh: Bool
-            var start: Int
-            var toneEnd: Int
-            var startDate: Date
-            var referencePower: Double
-            var samples: [Float]
-            var readings: [WindowReading]
         }
     }
 
@@ -535,7 +487,7 @@ enum SignalAnalyzer {
         let noiseBins = noiseFrequencies ?? Goertzel.noiseFrequencies(f0: f0, f1: f1, sampleRate: sampleRate)
         let noisePower = noiseBins.reduce(0.0) { partial, frequency in
             partial + Goertzel.power(samples: samples, sampleRate: sampleRate, frequency: frequency)
-        } / Double(noiseBins.count)
+        } / Double(max(noiseBins.count, 1))
         let signal = max(p0, p1)
         let inactive = max(min(p0, p1), 1e-20)
         let noise = max(noisePower, 1e-20)

@@ -62,46 +62,46 @@ for index in 1..<pairs.count {
     expect(abs(step - 500) < 0.1, "step \(step)")
 }
 
-// MARK: - 每个 bit 是配置里的单音加静音，没有淡入淡出
+// MARK: - OFDM 参数和整包时长
 
 let rate = 48_000.0
 let fresh = TestConfig()
-expectEqual(fresh.toneDurationMs, 30, "tone default")
-expectEqual(fresh.silenceDurationMs, 15, "silence default")
+expectEqual(fresh.symbolDurationMs, 20, "symbol default")
+expectEqual(fresh.cyclicPrefixMs, 1.4, "cyclic prefix default")
+expectEqual(fresh.chirpDurationMs, 100, "chirp default")
+expectEqual(fresh.silenceDurationMs, 15, "gap default")
 expectEqual(fresh.leadSilenceMs, 20, "lead default")
 expectEqual(fresh.trailSilenceMs, 20, "trail default")
-expectEqual(fresh.symbolDurationMs, 40, "symbol default unchanged")
 let packetMs = fresh.normalized.expectedSignalSeconds * 1_000 + fresh.leadSilenceMs + fresh.trailSilenceMs
 expect(packetMs < 3_000, "packet under 3 seconds, got \(packetMs)")
-let bits: [Bool] = [false, false, true, true, false]
-let rendered = CPFSKSynth.render(
-    bits: bits,
-    f0: 16_000,
-    f1: 18_000,
-    sampleRate: rate,
-    toneMs: fresh.toneDurationMs,
-    gapMs: fresh.silenceDurationMs,
-    amplitude: 1
+var longerSymbol = fresh
+longerSymbol.symbolDurationMs = 40
+expect(
+    OFDMModem.signalSeconds(f0: 16_000, f1: 17_000, config: longerSymbol)
+        > OFDMModem.signalSeconds(f0: 16_000, f1: 17_000, config: fresh),
+    "symbol duration changes the packet"
 )
-let toneSamples = Int((fresh.toneDurationMs / 1_000 * rate).rounded())
-let gapSamples = Int((fresh.silenceDurationMs / 1_000 * rate).rounded())
-expectEqual(rendered.count, bits.count * (toneSamples + gapSamples), "pulse length")
-let quarter = sin(2 * Double.pi * 16_000 / rate)
-expect(abs(Double(rendered[1]) - quarter) < 1e-4, "tone starts at full amplitude")
-var pulseOK = true
-for (index, bit) in bits.enumerated() {
-    let origin = index * (toneSamples + gapSamples)
-    let tone = rendered[origin..<(origin + toneSamples)]
-    let gap = rendered[(origin + toneSamples)..<(origin + toneSamples + gapSamples)]
-    let frequency = bit ? 18_000.0 : 16_000.0
-    let other = bit ? 16_000.0 : 18_000.0
-    let onPulse = Goertzel.power(samples: tone, sampleRate: rate, frequency: frequency)
-    let offPulse = Goertzel.power(samples: tone, sampleRate: rate, frequency: other)
-    if onPulse <= offPulse * 20 || gap.contains(where: { $0 != 0 }) {
-        pulseOK = false
-    }
+let probePayload = PacketLayout.encode(lowHz: 16_000, highHz: 17_000, sequence: 0, random: 1)
+let rendered = OFDMModem.playback(
+    bits: PacketLayout.bits(for: probePayload),
+    f0: 16_000,
+    f1: 17_000,
+    config: fresh
+)
+let probePlan = OFDMModem.plan(f0: 16_000, f1: 17_000, config: fresh, bitCount: 64)
+let leadSamples = Int((fresh.leadSilenceMs / 1_000 * rate).rounded())
+let trailSamples = Int((fresh.trailSilenceMs / 1_000 * rate).rounded())
+expectEqual(rendered.count, leadSamples + probePlan.packetSamples + trailSamples, "packet length")
+let chirp = rendered[leadSamples..<(leadSamples + probePlan.chirp.count)]
+let chirpPeak = chirp.map { abs($0) }.max() ?? 0
+expect(abs(Double(chirpPeak) - 0.98) < 0.02, "chirp peak \(chirpPeak)")
+let earlyPeak = chirp.prefix(Int(0.002 * rate)).map { abs($0) }.max() ?? 0
+expect(earlyPeak > 0.9, "chirp has no fade-in, early peak \(earlyPeak)")
+if let roundTrip = OFDMModem.demodulate(window: Array(rendered), symbolStart: leadSamples + probePlan.chirp.count + probePlan.gap, plan: probePlan) {
+    expectEqual(roundTrip.bits, PacketLayout.bits(for: probePayload), "ofdm round trip")
+} else {
+    expect(false, "ofdm round trip produced no bits")
 }
-expect(pulseOK, "each bit is the matching tone followed by silence")
 
 // MARK: - Goertzel 能分出目标音
 
@@ -140,6 +140,8 @@ config.repeats = 3
 config.leadSilenceMs = 20
 config.trailSilenceMs = 20
 config.symbolDurationMs = 20
+config.cyclicPrefixMs = 1.4
+config.chirpDurationMs = 80
 let testPairs = [
     PlannedPair(lowHz: 16_000, highHz: 17_000),
     PlannedPair(lowHz: 17_500, highHz: 18_500)
@@ -154,30 +156,17 @@ for pair in testPairs {
     for repeatIndex in 0..<config.repeats {
         sequence += 1
         let payload = PacketLayout.encode(lowHz: pair.lowHz, highHz: pair.highHz, sequence: repeatIndex, random: UInt64(sequence))
-        let buffer = CPFSKSynth.playback(
+        let buffer = OFDMModem.playback(
             bits: PacketLayout.bits(for: payload),
             f0: pair.lowHz,
             f1: pair.highHz,
-            sampleRate: rate,
-            toneMs: config.toneDurationMs,
-            gapMs: config.silenceDurationMs,
-            leadMs: config.leadSilenceMs,
-            trailMs: config.trailSilenceMs
+            config: config
         )
         var noisy = buffer
         for index in noisy.indices {
             noisy[index] += noise.next()
         }
         let lead = Int((config.leadSilenceMs / 1_000 * rate).rounded())
-        if sequence == 1 {
-            let step = toneSamples + gapSamples
-            let bitStart = lead + 3 * step
-            let hole = Int((0.005 * rate).rounded())
-            let holeStart = bitStart + toneSamples / 2
-            for index in holeStart..<(holeStart + hole) {
-                noisy[index] = 0
-            }
-        }
         expectedStarts.append(audio.count + lead)
         audio.append(contentsOf: noisy)
         sent.append(SentPacket(
@@ -325,8 +314,7 @@ var shortLogs: [String] = []
 shortReceiver.onLog = { shortLogs.append($0) }
 feed(shortReceiver, audio: shortTone, rate: rate, started: started)
 _ = shortReceiver.finish()
-expect(shortLogs.contains { $0.hasPrefix("丢弃脉冲 频率=低 ") && $0.hasSuffix(" 原因=短于16ms") }, "discard short pulse \(shortLogs)")
-expect(shortLogs.allSatisfy { !$0.hasPrefix("解调=") }, "short pulse does not finish a frame")
+expect(shortLogs.allSatisfy { !$0.hasPrefix("解调=") }, "short tone does not finish a frame \(shortLogs)")
 
 if failures.isEmpty {
     print("SELF_CHECK_OK \(analysisPairs.map { "\($0.label)=\($0.score.total)" }.joined(separator: ", "))")

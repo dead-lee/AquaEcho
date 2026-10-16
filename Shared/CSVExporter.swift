@@ -52,7 +52,7 @@ enum CSVExporter {
     private static func row(pair: PairScore, transmission: Transmission, mode: TestMode) -> [String] {
         let packet = transmission.packet
         return [
-            mode.rawValue,
+            mode.title,
             field(PlannedPair(lowHz: pair.lowHz, highHz: pair.highHz).csvField),
             String(packet.sequence),
             String(packet.repeatIndex),
