@@ -138,7 +138,7 @@ enum SignalAnalyzer {
                 let lastLag = audio.count - plan.preamble.count
                 let searchEnd = min(lastLag, audio.count - plan.packetSamples + OFDMModem.naiserWindow)
                 guard searchEnd >= localStart else { return }
-                let candidates = candidateLocals(from: localStart, through: searchEnd, separation: 2_400)
+                let candidates = candidateLocals(from: localStart, through: searchEnd, separation: 2_400, symbolLength: plan.ns)
                 if candidates.isEmpty {
                     consume(upToLocal: searchEnd, plan: plan, pair: pair)
                     trim()
@@ -147,19 +147,18 @@ enum SignalAnalyzer {
                 var accepted = false
                 var rejectedLocal = localStart
                 for candidate in candidates {
-                    guard OFDMModem.naiserLock(samples: audio, peakIndex: candidate) != nil else {
+                    guard let lock = OFDMModem.naiserLock(samples: audio, peakIndex: candidate) else {
                         rejectedLocal = max(rejectedLocal, candidate + 2_400)
                         continue
                     }
-                    // evalSegv2 用相关峰当下标，Naiser 只判断这个峰是否成立。
-                    let symbolStart = candidate + plan.preamble.count + plan.gap
+                    let symbolStart = lock.start + plan.preamble.count + plan.gap
                     let packetEndLocal = symbolStart + symbolCount * plan.symbolSamples
                     if packetEndLocal > audio.count {
                         consume(upToLocal: candidate, plan: plan, pair: pair)
                         return
                     }
                     if let demod = OFDMModem.demodulate(window: audio, symbolStart: symbolStart, plan: plan) {
-                        accept(demod, preambleAbsolute: emitted + candidate)
+                        accept(demod, preambleAbsolute: emitted + lock.start)
                         let packetEnd = emitted + symbolStart + symbolCount * plan.symbolSamples
                         noteSkipped(from: searchFrom, to: packetEnd)
                         searchFrom = packetEnd
@@ -193,13 +192,17 @@ enum SignalAnalyzer {
             return heard
         }
 
-        /// getCandidateLocs：只保留正峰，取最强的 3 个，彼此至少隔开 separation。
-        private func candidateLocals(from: Int, through: Int, separation: Int) -> [Int] {
+        /// getCandidateLocs 再加 find_symbol.m 的尖峰检查：±1000 点里超过半峰的个数太多就丢掉。
+        /// 不尖的峰只清掉半峰以上的那一段，避免把旁边真正的前导一起盖住。
+        private func candidateLocals(from: Int, through: Int, separation: Int, symbolLength: Int) -> [Int] {
             guard through >= from, !correlation.isEmpty else { return [] }
             var work = correlation
             var chosen: [Int] = []
             let upper = min(through, work.count - 1)
-            while chosen.count < 3 {
+            let sharpLimit = symbolLength <= 960 ? 150 : 80
+            var inspections = 0
+            while chosen.count < 3, inspections < 12 {
+                inspections += 1
                 var best = Float(0)
                 var bestAt = -1
                 var index = from
@@ -211,14 +214,42 @@ enum SignalAnalyzer {
                     index += 1
                 }
                 guard bestAt >= 0 else { break }
-                chosen.append(bestAt)
-                let low = max(0, bestAt - separation)
-                let high = min(work.count, bestAt + separation + 1)
-                for index in low..<high {
-                    work[index] = 0
+                if sharpCount(around: bestAt, in: work, height: best * 0.5) <= sharpLimit {
+                    chosen.append(bestAt)
+                    let low = max(0, bestAt - separation)
+                    let high = min(work.count, bestAt + separation + 1)
+                    for index in low..<high {
+                        work[index] = 0
+                    }
+                } else {
+                    suppressLobe(around: bestAt, in: &work, height: best * 0.5)
                 }
             }
             return chosen.sorted()
+        }
+
+        private func sharpCount(around index: Int, in values: [Float], height: Float) -> Int {
+            let from = max(0, index - 1_000)
+            let to = min(values.count - 1, index + 1_000)
+            var count = 0
+            for sample in from...to where values[sample] > height {
+                count += 1
+            }
+            return count
+        }
+
+        private func suppressLobe(around index: Int, in values: inout [Float], height: Float) {
+            var low = index
+            while low > 0, values[low - 1] > height {
+                low -= 1
+            }
+            var high = index
+            while high + 1 < values.count, values[high + 1] > height {
+                high += 1
+            }
+            for sample in low...high {
+                values[sample] = 0
+            }
         }
 
         private func consume(upToLocal: Int, plan: OFDMModem.Plan, pair: (Double, Double)) {
@@ -301,7 +332,10 @@ enum SignalAnalyzer {
             frameReadings = []
             firstBitDate = nil
             firstBitWall = nil
-            scheduleIndex += 1
+            if frequencyMatched {
+                scheduleIndex += 1
+                pendingWindowLogIndex = scheduleIndex
+            }
             let hit = Hit(
                 payload: payload,
                 aligned: success,
@@ -352,7 +386,6 @@ enum SignalAnalyzer {
             if let matched {
                 record(match(packet: matched, hit: hit))
             }
-            pendingWindowLogIndex = scheduleIndex
         }
 
         private func notePeak(_ reading: WindowReading, hopSamples: Int) {

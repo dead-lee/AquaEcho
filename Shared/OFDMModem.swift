@@ -281,19 +281,36 @@ enum OFDMModem {
 
     /// find_symbol.m：96 阶 Hamming 带通，低频比频带低 200 Hz，高频停在频带上沿。补偿群延迟后，下标与输入对齐。
     static func bandpass(_ samples: [Float], lowHz: Double, highHz: Double, sampleRate: Double) -> [Float] {
-        guard samples.count > filterDelay, sampleRate > 0 else { return samples }
-        let taps = bandpassTaps(lowHz: lowHz, highHz: highHz, sampleRate: sampleRate)
-        var filtered = [Float](repeating: 0, count: samples.count)
-        let order = taps.count - 1
-        for index in samples.indices {
-            var acc = 0.0
-            let start = max(0, index - order)
-            for tapIndex in start...index {
-                acc += Double(samples[tapIndex]) * taps[index - tapIndex]
+        guard samples.count > filterOrder, sampleRate > 0 else { return samples }
+        let kernel = bandpassTaps(lowHz: lowHz, highHz: highHz, sampleRate: sampleRate).map { Float($0) }
+        let outputCount = samples.count - kernel.count + 1
+        guard outputCount > 0 else { return samples }
+        var convolved = [Float](repeating: 0, count: outputCount)
+        samples.withUnsafeBufferPointer { signalPointer in
+            kernel.withUnsafeBufferPointer { kernelPointer in
+                convolved.withUnsafeMutableBufferPointer { outputPointer in
+                    guard let signalBase = signalPointer.baseAddress,
+                          let kernelBase = kernelPointer.baseAddress,
+                          let outputBase = outputPointer.baseAddress else { return }
+                    vDSP_conv(
+                        signalBase,
+                        1,
+                        kernelBase,
+                        1,
+                        outputBase,
+                        1,
+                        vDSP_Length(outputCount),
+                        vDSP_Length(kernel.count)
+                    )
+                }
             }
-            let aligned = index - filterDelay
-            if aligned >= 0 {
-                filtered[aligned] = Float(acc)
+        }
+        // 对称 FIR 的群延迟是阶数的一半。补上这段延迟后，下标和输入采样对齐。
+        var filtered = [Float](repeating: 0, count: samples.count)
+        for index in convolved.indices {
+            let aligned = index + filterDelay
+            if aligned < filtered.count {
+                filtered[aligned] = convolved[index]
             }
         }
         return filtered
@@ -338,7 +355,9 @@ enum OFDMModem {
         return Array(signalReal.prefix(count))
     }
 
-    /// Naiser_check_valid：在相关峰前后 1200 点里用步长 8 算差分相关，过 0.6 后取 85% 峰宽的中点。
+    /// Naiser_check_valid：在相关峰前后 1200 点、步长 8 上算差分相关。
+    /// 得分达到 0.6 后，起点取仍保持在峰值附近的最后一个下标。
+    /// 对 watercomms 的 naiser 波形，这段平台的后沿就是前导起点；85% 中点会落在起点之前约一个保护间隔。
     static func naiserLock(samples: [Float], peakIndex: Int) -> (start: Int, score: Double)? {
         let preambleLength = naiserPN.count * (naiserNu + naiserN0)
         let from = max(0, peakIndex - naiserWindow)
@@ -347,38 +366,20 @@ enum OFDMModem {
         var scores: [(index: Int, score: Double)] = []
         scores.reserveCapacity((to - from) / naiserStep + 2)
         var index = from
-        var bestOffset = 0
         var bestScore = -Double.infinity
         while index <= to {
             let score = naiserMetric(samples, start: index)
             if score > bestScore {
                 bestScore = score
-                bestOffset = scores.count
             }
             scores.append((index, score))
             index += naiserStep
         }
         guard bestScore >= naiserThreshold, !scores.isEmpty else { return nil }
-        let height = bestScore * 0.85
-        var left = bestOffset
-        var right = bestOffset
-        var cursor = bestOffset
-        while cursor + 1 < scores.count {
-            if scores[cursor].score >= height, scores[cursor + 1].score <= height {
-                right = cursor
-                break
-            }
-            cursor += 1
+        let floor = bestScore * 0.995
+        let start = scores.reduce(scores[0].index) { edge, sample in
+            sample.score >= floor ? max(edge, sample.index) : edge
         }
-        cursor = bestOffset
-        while cursor > 0 {
-            if scores[cursor].score >= height, scores[cursor - 1].score <= height {
-                left = cursor
-                break
-            }
-            cursor -= 1
-        }
-        let start = (scores[left].index + scores[right].index) / 2
         return (start, bestScore)
     }
 
