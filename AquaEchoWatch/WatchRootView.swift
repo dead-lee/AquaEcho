@@ -22,8 +22,8 @@ struct WatchRootView: View {
                 .font(.caption2)
             Text("音量 \(volumePercent)%")
                 .font(.caption2)
-                .foregroundStyle(model.outputVolume < 0.95 ? .orange : .secondary)
-            if model.outputVolume < 0.95 {
+                .foregroundStyle(model.playbackVolume < 0.95 ? .orange : .secondary)
+            if model.playbackVolume < 0.95 {
                 Text("音量不足，请旋转数码表冠调到最大")
                     .font(.caption2)
                     .foregroundStyle(.orange)
@@ -57,6 +57,19 @@ struct WatchRootView: View {
         }
         .clipped()
         .contentShape(Rectangle())
+        .focusable(true)
+        .digitalCrownRotation(
+            $model.playbackVolume,
+            from: 0.0,
+            through: 1.0,
+            by: 0.05,
+            sensitivity: .medium,
+            isContinuous: false,
+            isHapticFeedbackEnabled: true
+        )
+        .onChange(of: model.playbackVolume) { _, _ in
+            model.applyPlaybackVolume()
+        }
         .simultaneousGesture(fingerScroll)
         .onPreferenceChange(ContentHeightKey.self) { height in
             contentHeight = height
@@ -71,12 +84,6 @@ struct WatchRootView: View {
         .onAppear { model.noteScenePhase(scenePhase) }
         .onChange(of: scenePhase) { _, phase in
             model.noteScenePhase(phase)
-        }
-        .task {
-            while !Task.isCancelled {
-                model.refreshOutputVolume()
-                try? await Task.sleep(nanoseconds: 300_000_000)
-            }
         }
     }
 
@@ -97,7 +104,7 @@ struct WatchRootView: View {
     }
 
     private var volumePercent: Int {
-        Int((model.outputVolume * 100).rounded())
+        Int((model.playbackVolume * 100).rounded())
     }
 }
 

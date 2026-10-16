@@ -21,8 +21,17 @@ final class TonePlayer {
     private let sampleRate: Double = 48_000
     private let playbackLock = NSLock()
     private var playbackDone: CheckedContinuation<Void, Never>?
+    private var playbackVolume: Float = 1
 
     var outputVolume: Float { AVAudioSession.sharedInstance().outputVolume }
+
+    func setPlaybackVolume(_ value: Float) {
+        let clamped = min(1, max(0, value))
+        playbackVolume = clamped
+        guard attached else { return }
+        engine.mainMixerNode.outputVolume = clamped
+        player.volume = clamped
+    }
 
     func prepare() throws {
         let session = AVAudioSession.sharedInstance()
@@ -37,10 +46,10 @@ final class TonePlayer {
             let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
             engine.attach(player)
             engine.connect(player, to: engine.mainMixerNode, format: format)
-            engine.mainMixerNode.outputVolume = 1
-            player.volume = 1
             attached = true
         }
+        engine.mainMixerNode.outputVolume = playbackVolume
+        player.volume = playbackVolume
         if !engine.isRunning {
             engine.prepare()
             try engine.start()

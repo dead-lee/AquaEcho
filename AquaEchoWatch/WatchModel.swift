@@ -9,6 +9,7 @@ final class WatchModel: ObservableObject {
     @Published var isRunning = false
     @Published var status = "等待 iPhone 开始"
     @Published var outputVolume: Float = 0
+    @Published var playbackVolume: Double = 1
     @Published var foregroundStatus = "正在申请前台"
 
     private let link = WatchLink()
@@ -44,6 +45,8 @@ final class WatchModel: ObservableObject {
         }
         link.activate()
         refreshOutputVolume()
+        playbackVolume = Double(outputVolume)
+        applyPlaybackVolume()
         log("手表端启动")
         WatchActivation.onDidBecomeActive = { [weak self] in
             self?.startExtendedRuntimeAfterBecomeActive()
@@ -80,6 +83,10 @@ final class WatchModel: ObservableObject {
 
     func refreshOutputVolume() {
         outputVolume = AVAudioSession.sharedInstance().outputVolume
+    }
+
+    func applyPlaybackVolume() {
+        player.setPlaybackVolume(Float(playbackVolume))
     }
 
     private func handle(_ envelope: WCEnvelope) {

@@ -51,7 +51,7 @@ iPhone 接收时间是检出该突发的那一次 `ingest(samples:at:sampleRate:
 1. 用 Xcode 打开 `AquaEcho.xcodeproj`，给两个 target 选好你的开发团队。Bundle ID 目前是 `com.deadlee.AquaEcho`。
 2. 把 iPhone App 装到手机上，Watch App 会一起装上。打开手表上的 AquaEcho 后让它留在前台；应用自己会申请延长运行，熄屏也不会被系统送回表盘。
 3. 在 iPhone 上设好频率、步进、重复次数，点「同步到 Watch」，再点「开始测试」。
-4. 把手表扬声器靠近 iPhone 底部麦克风。播放器音量保持 `engine.mainMixerNode.outputVolume = 1`、`player.volume = 1`，波形峰值归一化到 0.98。程序不修改系统音量。`AVAudioSession` 类别是 `.playback`。界面不使用 `.digitalCrownRotation`，表冠不由应用占用；播放期间由系统处理表冠音量。界面显示当前 `outputVolume` 的百分比。低于 0.95 时文字固定为「音量不足，请旋转数码表冠调到最大」，发送仍然继续。开始发送前读取 `AVAudioSession.sharedInstance().outputVolume`，并写入日志「音量 outputVolume=0.xx」。
+4. 把手表扬声器靠近 iPhone 底部麦克风。波形峰值归一化到 0.98。程序不修改系统音量。`AVAudioSession` 类别是 `.playback`。`WatchRootView` 用 `.digitalCrownRotation` 调节播放音量，绑定值范围 `0.0...1.0`，步进 `0.05`。初始值是当前 `AVAudioSession.sharedInstance().outputVolume`。旋转表冠时把该值写入 `player.volume` 和 `engine.mainMixerNode.outputVolume`。界面显示这个音量的百分比。低于 0.95 时文字固定为「音量不足，请旋转数码表冠调到最大」，发送仍然继续。开始发送前读取 `AVAudioSession.sharedInstance().outputVolume`，并写入日志「音量 outputVolume=0.xx」。
 
 模拟器没有这条真实声路，评分要在真机上做。模拟器可以确认界面、延长运行是否申请成功，以及日志有没有写进 Documents。
 
@@ -65,7 +65,7 @@ iPhone 接收时间是检出该突发的那一次 `ingest(samples:at:sampleRate:
 
 `startIfNeeded` 发现当前会话的状态是 `.running`、`.scheduled` 或 `.notStarted` 时直接返回，不再创建新的 `WKExtendedRuntimeSession`。只有会话为 nil，或状态为 `.invalid` 时才新建。新建之前如果旧会话还在，先 `invalidate()` 并置为 nil。系统以 `.error`、`.expired` 或 `.suppressedBySystem` 收回会话，且不是用户主动结束时，只在 0.5 秒后调用 `startIfNeeded` 重建，不调用 `onStopSound`，也不停止发声。这三种失效的日志是「延长运行失效 reason=原始枚举名 rawValue=X detail=错误描述」。失效回调只处理当前这一次会话，避免清掉刚建好的新会话。
 
-手表界面的根布局是普通 `VStack`，不用 `ScrollView`，也不使用 `.scrollDisabled`。内容超出屏幕时，用 `.contentShape(Rectangle())` 和 `DragGesture` 做只响应手指的滚动。不添加 `.digitalCrownRotation`，也不写任何表冠事件。音频播放期间由系统把数码表冠分给音量调节。程序不直接改系统音量。
+手表界面的根布局是普通 `VStack`，不用 `ScrollView`，也不使用 `.scrollDisabled`。内容超出屏幕时，用 `.contentShape(Rectangle())` 和 `DragGesture` 做只响应手指的滚动。数码表冠只通过 `.digitalCrownRotation` 调节上面的播放音量，不改系统音量。
 
 ## CSV
 
