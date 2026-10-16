@@ -20,16 +20,23 @@ struct WatchRootView: View {
                 .font(.headline)
             Text("\(model.config.plannedPairs().count) 组 · 重复 \(model.config.repeats) 次")
                 .font(.caption2)
-            Text(volumeText)
+            Text("音量 \(volumePercent)%")
                 .font(.caption2)
                 .foregroundStyle(model.outputVolume < 0.95 ? .orange : .secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if model.outputVolume < 0.95 {
+                Text("音量不足，请旋转数码表冠调到最大")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text(model.status)
                 .font(.caption)
                 .fixedSize(horizontal: false, vertical: true)
             if model.isRunning {
                 ProgressView()
-                Button("停止", role: .destructive, action: model.stop)
+                Button("停止", role: .destructive) {
+                    model.stop(reason: "用户按停止按钮")
+                }
             } else {
                 Button("开始", action: model.requestStart)
                     .buttonStyle(.borderedProminent)
@@ -65,6 +72,12 @@ struct WatchRootView: View {
         .onChange(of: scenePhase) { _, phase in
             model.noteScenePhase(phase)
         }
+        .task {
+            while !Task.isCancelled {
+                model.refreshOutputVolume()
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+        }
     }
 
     private var fingerScroll: some Gesture {
@@ -83,12 +96,8 @@ struct WatchRootView: View {
         return min(0, max(limit, proposed))
     }
 
-    private var volumeText: String {
-        let percent = Int((model.outputVolume * 100).rounded())
-        if model.outputVolume < 0.95 {
-            return "音量不足，请旋转数码表冠调到最大"
-        }
-        return "音量 \(percent)%"
+    private var volumePercent: Int {
+        Int((model.outputVolume * 100).rounded())
     }
 }
 

@@ -51,7 +51,7 @@ iPhone 接收时间是检出该突发的那一次 `ingest(samples:at:sampleRate:
 1. 用 Xcode 打开 `AquaEcho.xcodeproj`，给两个 target 选好你的开发团队。Bundle ID 目前是 `com.deadlee.AquaEcho`。
 2. 把 iPhone App 装到手机上，Watch App 会一起装上。打开手表上的 AquaEcho 后让它留在前台；应用自己会申请延长运行，熄屏也不会被系统送回表盘。
 3. 在 iPhone 上设好频率、步进、重复次数，点「同步到 Watch」，再点「开始测试」。
-4. 把手表扬声器靠近 iPhone 底部麦克风。播放器音量保持 `engine.mainMixerNode.outputVolume = 1`、`player.volume = 1`，波形峰值归一化到 0.98。程序不修改系统音量。开始发送前读取 `AVAudioSession.sharedInstance().outputVolume`，并写入日志「音量 outputVolume=0.xx」。低于 0.95 时状态文字固定为「音量不足，请旋转数码表冠调到最大」，发送仍然继续。
+4. 把手表扬声器靠近 iPhone 底部麦克风。播放器音量保持 `engine.mainMixerNode.outputVolume = 1`、`player.volume = 1`，波形峰值归一化到 0.98。程序不修改系统音量。`AVAudioSession` 类别是 `.playback`。界面不使用 `.digitalCrownRotation`，表冠不由应用占用；播放期间由系统处理表冠音量。界面显示当前 `outputVolume` 的百分比。低于 0.95 时文字固定为「音量不足，请旋转数码表冠调到最大」，发送仍然继续。开始发送前读取 `AVAudioSession.sharedInstance().outputVolume`，并写入日志「音量 outputVolume=0.xx」。
 
 模拟器没有这条真实声路，评分要在真机上做。模拟器可以确认界面、延长运行是否申请成功，以及日志有没有写进 Documents。
 
@@ -61,9 +61,9 @@ iPhone 接收时间是检出该突发的那一次 `ingest(samples:at:sampleRate:
 
 本机 watchOS SDK 的构造方法是 `WKExtendedRuntimeSession()`，没有 `sessionType` 参数。sessionType 固定为 self-care：`AquaEchoWatch/Info.plist` 的 `WKBackgroundModes` 只有 `self-care`。不在 `applicationWillResignActive` 或启动过早时创建会话，只在 `applicationDidBecomeActive` 之后创建并 `start()`。日志记录「延长运行已在 applicationDidBecomeActive 后启动」。
 
-启动成功后，熄屏、屏幕变暗、返回菜单都不调用 `invalidate()`，发送继续。只有用户点击停止按钮，或按数码表冠离开应用（系统原因 `resignedFrontmost`）时，才调用 `invalidate()` 结束会话并停止发声。`resignedFrontmost` 不重建会话。
+启动成功后，熄屏、屏幕变暗、返回菜单都不调用 `invalidate()`，发送继续。只有用户点击停止按钮，或按数码表冠离开应用（系统原因 `resignedFrontmost`）时，才调用 `invalidate()` 结束会话并停止发声。`resignedFrontmost` 不重建会话。停止原因写「resignedFrontmost rawValue=X」。
 
-`startIfNeeded` 发现当前会话的状态是 `.running`、`.scheduled` 或 `.notStarted` 时直接返回，不再创建新的 `WKExtendedRuntimeSession`。只有会话为 nil，或状态为 `.invalid` 时才新建。新建之前如果旧会话还在，先 `invalidate()` 并置为 nil。系统以 `.error`、`.expired` 或 `.suppressedBySystem` 收回会话，且不是用户主动结束时，0.5 秒后调用 `startIfNeeded` 重建。失效回调只处理当前这一次会话，避免清掉刚建好的新会话。
+`startIfNeeded` 发现当前会话的状态是 `.running`、`.scheduled` 或 `.notStarted` 时直接返回，不再创建新的 `WKExtendedRuntimeSession`。只有会话为 nil，或状态为 `.invalid` 时才新建。新建之前如果旧会话还在，先 `invalidate()` 并置为 nil。系统以 `.error`、`.expired` 或 `.suppressedBySystem` 收回会话，且不是用户主动结束时，只在 0.5 秒后调用 `startIfNeeded` 重建，不调用 `onStopSound`，也不停止发声。这三种失效的日志是「延长运行失效 reason=原始枚举名 rawValue=X detail=错误描述」。失效回调只处理当前这一次会话，避免清掉刚建好的新会话。
 
 手表界面的根布局是普通 `VStack`，不用 `ScrollView`，也不使用 `.scrollDisabled`。内容超出屏幕时，用 `.contentShape(Rectangle())` 和 `DragGesture` 做只响应手指的滚动。不添加 `.digitalCrownRotation`，也不写任何表冠事件。音频播放期间由系统把数码表冠分给音量调节。程序不直接改系统音量。
 
@@ -83,7 +83,7 @@ iPhone 接收时间是检出该突发的那一次 `ingest(samples:at:sampleRate:
 
 与 CSV 使用同一个 Documents 目录。iPhone 的 `Info.plist` 已设置 `UIFileSharingEnabled = YES` 和 `LSSupportsOpeningDocumentsInPlace = YES`。
 
-关键事件都写入该文件：开始发送、停止发送、当前频率对、发送时间戳、播放结束时间、音量 `outputVolume=0.xx`、错误信息。手表上每个包的 `play` 返回后额外记一条「播放结束 序号 X 时间 ...」。这条和发送时间一样，先留在发送循环的内存里，循环结束后再一次性同步。日志只写在 Documents 里。发送循环里的日志先写入手表本地文件和内存数组 `pendingLogs`，不在循环内通过 Watch Connectivity 发送，避免打断播放节奏。状态变为「发送完成」或「已停止」之后，再一次性把这批日志发给 iPhone。手表端不提供日志查看界面。iPhone 上可在「日志」页、访达或「文件」App 里看。日志页列出 Documents 里的文件，并在这一栏放「一键清理」。它删除所有 `AquaEcho_Results_` 开头的 `.csv` 和所有 `AquaEcho_Log_` 开头的 `.txt`，完成后界面显示「已清理 CSV 和日志」。
+关键事件都写入该文件：开始发送、停止发送、当前频率对、发送时间戳、播放结束时间、音量 `outputVolume=0.xx`、错误信息。`WatchModel.stop()` 写「停止发送 原因=原始信息」。用户按停止按钮时原因是「用户按停止按钮」；收到手机 `.stop` 时原因是「收到手机停止指令」；`resignedFrontmost` 时原因是「resignedFrontmost rawValue=X」。其他调用写函数名和关键参数原值，不用归类后的中文代替原始值。手表上每个包的 `play` 返回后额外记一条「播放结束 序号 X 时间 ...」。这条和发送时间一样，先留在发送循环的内存里，循环结束后再一次性同步。日志只写在 Documents 里。发送循环里的日志先写入手表本地文件和内存数组 `pendingLogs`，不在循环内通过 Watch Connectivity 发送，避免打断播放节奏。状态变为「发送完成」或「已停止」之后，再一次性把这批日志发给 iPhone。手表端不提供日志查看界面。iPhone 上可在「日志」页、访达或「文件」App 里看。日志页列出 Documents 里的文件，并在这一栏放「一键清理」。它删除所有 `AquaEcho_Results_` 开头的 `.csv` 和所有 `AquaEcho_Log_` 开头的 `.txt`，完成后界面显示「已清理 CSV 和日志」。
 
 iPhone 每处理完一个包写一条「包 X 前导对齐=是/否 解出=hex或空 通过=是/否 解调耗时=XXXms」。前导没有对齐时，解出字段写「空」。每个包的 `closeBurst` 结束时再写一条「包 X 结束后窗口剩余 XXXXX 样本」，剩余为 0 也写。
 

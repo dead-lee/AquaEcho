@@ -12,7 +12,7 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
     @Published private(set) var running = false
 
     var onEvent: ((String) -> Void)?
-    var onStopSound: (() -> Void)?
+    var onStopSound: ((String) -> Void)?
 
     private var session: WKExtendedRuntimeSession?
     private var userEnded = false
@@ -95,7 +95,7 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
         switch reason {
         case .resignedFrontmost:
             onEvent?("按数码表冠离开应用，invalidate 并停止发声")
-            onStopSound?()
+            onStopSound?("resignedFrontmost rawValue=\(reason.rawValue)")
             endBecauseUserStoppedOrLeft()
         case .none:
             status = "已结束前台保持"
@@ -105,9 +105,9 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
                 onEvent?("系统结束了延长运行（\(Self.name(reason))\(detail.map { "：\($0)" } ?? "")）。熄屏、变暗、返回菜单不会因此调用 invalidate")
             }
         case .expired, .suppressedBySystem, .error:
+            onEvent?("延长运行失效 reason=\(Self.rawName(reason)) rawValue=\(reason.rawValue) detail=\(detail ?? "nil")")
             if !userEnded {
                 status = "前台保持中"
-                onEvent?("系统结束了延长运行（\(Self.name(reason))\(detail.map { "：\($0)" } ?? "")）。熄屏、变暗、返回菜单不会因此调用 invalidate")
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 500_000_000)
                     self.startIfNeeded()
@@ -115,6 +115,18 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
             }
         @unknown default:
             break
+        }
+    }
+
+    private static func rawName(_ reason: WKExtendedRuntimeSessionInvalidationReason) -> String {
+        switch reason {
+        case .none: return "none"
+        case .sessionInProgress: return "sessionInProgress"
+        case .expired: return "expired"
+        case .resignedFrontmost: return "resignedFrontmost"
+        case .suppressedBySystem: return "suppressedBySystem"
+        case .error: return "error"
+        @unknown default: return "unknown"
         }
     }
 

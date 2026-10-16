@@ -28,8 +28,8 @@ final class WatchModel: ObservableObject {
             self?.log(message)
             self?.foregroundStatus = self?.foreground.status ?? message
         }
-        foreground.onStopSound = { [weak self] in
-            self?.stop()
+        foreground.onStopSound = { [weak self] reason in
+            self?.stop(reason: reason)
         }
         link.onEnvelope = { [weak self] envelope in
             Task { @MainActor in
@@ -43,7 +43,7 @@ final class WatchModel: ObservableObject {
             }
         }
         link.activate()
-        outputVolume = player.outputVolume
+        refreshOutputVolume()
         log("手表端启动")
         WatchActivation.onDidBecomeActive = { [weak self] in
             self?.startExtendedRuntimeAfterBecomeActive()
@@ -67,15 +67,19 @@ final class WatchModel: ObservableObject {
         status = reachable ? "已请 iPhone 开始录音" : "iPhone 未连接"
     }
 
-    func stop() {
+    func stop(reason: String) {
         guard !didStop else { return }
         didStop = true
         stopRequested = true
         status = "已停止"
-        log("停止发送")
+        log("停止发送 原因=\(reason)")
         player.stop()
         foreground.endBecauseUserStoppedOrLeft()
         foregroundStatus = foreground.status
+    }
+
+    func refreshOutputVolume() {
+        outputVolume = AVAudioSession.sharedInstance().outputVolume
     }
 
     private func handle(_ envelope: WCEnvelope) {
@@ -94,7 +98,7 @@ final class WatchModel: ObservableObject {
             guard !playing else { return }
             Task { await run() }
         case .stop:
-            stop()
+            stop(reason: "收到手机停止指令")
         case .requestStart, .progress, .packet, .finished, .log:
             break
         }
@@ -117,8 +121,8 @@ final class WatchModel: ObservableObject {
         var sent: [SentPacket] = []
         do {
             try player.prepare()
-            let volume = AVAudioSession.sharedInstance().outputVolume
-            outputVolume = volume
+            refreshOutputVolume()
+            let volume = outputVolume
             log(String(format: "音量 outputVolume=%.2f", locale: Locale(identifier: "en_US_POSIX"), volume))
             if volume < 0.95 {
                 status = "音量不足，请旋转数码表冠调到最大"
@@ -176,7 +180,7 @@ final class WatchModel: ObservableObject {
         player.stop()
         isRunning = false
         playing = false
-        outputVolume = player.outputVolume
+        refreshOutputVolume()
     }
 
     private func log(_ message: String) {
