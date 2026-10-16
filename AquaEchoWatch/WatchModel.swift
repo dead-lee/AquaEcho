@@ -233,7 +233,6 @@ final class WatchModel: ObservableObject {
             bits: PacketLayout.bits(for: payload),
             f0: pair.lowHz,
             f1: pair.highHz,
-            symbolSeconds: config.symbolDurationMs / 1_000,
             sampleRate: config.sampleRate,
             leadMs: config.leadSilenceMs,
             trailMs: config.trailSilenceMs

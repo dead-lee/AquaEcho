@@ -62,30 +62,28 @@ for index in 1..<pairs.count {
     expect(abs(step - 500) < 0.1, "step \(step)")
 }
 
-// MARK: - 连续相位
+// MARK: - 每个 bit 是 40 ms 单音加 15 ms 静音
 
 let rate = 48_000.0
 let bits: [Bool] = [false, false, true, true, false]
-let symbol = 0.01
-let rendered = CPFSKSynth.render(bits: bits, f0: 16_000, f1: 18_000, symbolSeconds: symbol, sampleRate: rate, amplitude: 1)
-let perSymbol = Int((symbol * rate).rounded())
-var phase = 0.0
-let twoPi = 2 * Double.pi
-var phaseOK = true
+let rendered = CPFSKSynth.render(bits: bits, f0: 16_000, f1: 18_000, sampleRate: rate, amplitude: 1)
+let toneSamples = Int((CPFSKSynth.toneMilliseconds / 1_000 * rate).rounded())
+let gapSamples = Int((CPFSKSynth.gapMilliseconds / 1_000 * rate).rounded())
+expectEqual(rendered.count, bits.count * (toneSamples + gapSamples), "pulse length")
+var pulseOK = true
 for (index, bit) in bits.enumerated() {
+    let origin = index * (toneSamples + gapSamples)
+    let tone = rendered[origin..<(origin + toneSamples)]
+    let gap = rendered[(origin + toneSamples)..<(origin + toneSamples + gapSamples)]
     let frequency = bit ? 18_000.0 : 16_000.0
-    let delta = twoPi * frequency / rate
-    for sampleIndex in 0..<perSymbol {
-        let expected = sin(phase)
-        let actual = Double(rendered[index * perSymbol + sampleIndex])
-        if abs(actual - expected) > 1e-4 {
-            phaseOK = false
-        }
-        phase += delta
-        if phase >= twoPi { phase -= twoPi }
+    let other = bit ? 16_000.0 : 18_000.0
+    let onPulse = Goertzel.power(samples: tone, sampleRate: rate, frequency: frequency)
+    let offPulse = Goertzel.power(samples: tone, sampleRate: rate, frequency: other)
+    if onPulse <= offPulse * 20 || gap.contains(where: { $0 != 0 }) {
+        pulseOK = false
     }
 }
-expect(phaseOK, "CPFSK phase stays continuous across symbol boundaries")
+expect(pulseOK, "each bit is the matching tone followed by silence")
 
 // MARK: - Goertzel 能分出目标音
 
@@ -142,7 +140,6 @@ for pair in testPairs {
             bits: PacketLayout.bits(for: payload),
             f0: pair.lowHz,
             f1: pair.highHz,
-            symbolSeconds: config.symbolDurationMs / 1_000,
             sampleRate: rate,
             leadMs: config.leadSilenceMs,
             trailMs: config.trailSilenceMs
@@ -152,6 +149,15 @@ for pair in testPairs {
             noisy[index] += noise.next()
         }
         let lead = Int((config.leadSilenceMs / 1_000 * rate).rounded())
+        if sequence == 1 {
+            let step = toneSamples + gapSamples
+            let bitStart = lead + 3 * step
+            let hole = Int((0.005 * rate).rounded())
+            let holeStart = bitStart + toneSamples / 2
+            for index in holeStart..<(holeStart + hole) {
+                noisy[index] = 0
+            }
+        }
         expectedStarts.append(audio.count + lead)
         audio.append(contentsOf: noisy)
         sent.append(SentPacket(
@@ -211,7 +217,12 @@ for sequence in 1...sent.count {
             && line.contains(" 是否纠错=")
             && line.contains(" 纠错后是否通过=是")
     }, "result log \(sequence)")
-    expect(phoneLogs.contains { $0.hasPrefix("突发 解调=成功 ") && $0.contains(" 匹配=无对应包") }, "burst log \(sequence)")
+    expect(phoneLogs.contains { line in
+        line.hasPrefix("解调=成功 ")
+            && line.contains(" 校验=通过 ")
+            && line.contains(" 解出hex=")
+            && line.contains(" 匹配=无对应包")
+    }, "demod log \(sequence)")
     expect(phoneLogs.contains { $0.hasPrefix("包 \(sequence) 结束后窗口剩余 ") && $0.hasSuffix(" 样本") }, "window log \(sequence)")
 }
 expectEqual(analysisPairs.count, 2, "two frequency pairs")
@@ -273,6 +284,7 @@ expect(silent[0].meanSNRdB < 5, "silence snr \(silent[0].meanSNRdB)")
 expect(silent[0].score.snr == 0, "silence snr points")
 expect(!silent[0].transmissions[0].passed, "silence is not a pass")
 expect(silent[0].score.total < 40, "silence total \(silent[0].score.total)")
+expect(phoneLogs.filter { $0.hasPrefix("解调=") }.count == sent.count, "only full 64-bit frames log demod")
 
 if failures.isEmpty {
     print("SELF_CHECK_OK \(analysisPairs.map { "\($0.label)=\($0.score.total)" }.joined(separator: ", "))")

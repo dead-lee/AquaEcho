@@ -63,11 +63,10 @@ struct TestConfig: Codable, Equatable {
         return pairs
     }
 
-    /// 不含前后静音的信号时长，供接收端搜索突发。
+    /// 不含前后静音的信号时长。每个 bit 固定 40 ms 单音加 15 ms 静音。
     var expectedSignalSeconds: Double {
-        let config = normalized
         let bits = Double(PacketLayout.bitCount)
-        return bits * config.symbolDurationMs / 1_000
+        return bits * (CPFSKSynth.toneMilliseconds + CPFSKSynth.gapMilliseconds) / 1_000
     }
 
     var estimatedTestSeconds: Double {
