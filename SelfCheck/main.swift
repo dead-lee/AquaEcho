@@ -137,7 +137,7 @@ var sequence = 0
 for pair in testPairs {
     for repeatIndex in 0..<config.repeats {
         sequence += 1
-        let payload = Data([UInt8(sequence), 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77])
+        let payload = PacketLayout.encode(lowHz: pair.lowHz, highHz: pair.highHz, sequence: repeatIndex, random: UInt64(sequence))
         let buffer = CPFSKSynth.playback(
             bits: PacketLayout.bits(for: payload),
             f0: pair.lowHz,
@@ -165,8 +165,20 @@ for pair in testPairs {
     }
 }
 
-expectEqual(PacketLayout.preamble, [0xAA], "preamble is one byte")
-expectEqual(PacketLayout.bits(for: Data(repeating: 0, count: 8)).count, 72, "72 bits")
+let samplePacket = PacketLayout.encode(lowHz: 16_000, highHz: 17_000, sequence: 2, random: 0x1_5555_5555)
+expectEqual(PacketLayout.bits(for: samplePacket).count, 64, "64 bits")
+let sampleFields = PacketLayout.decode(samplePacket)
+expect(sampleFields.lowHz == 16_000, "decoded low")
+expect(sampleFields.highHz == 17_000, "decoded high")
+expectEqual(sampleFields.sequence, 2, "decoded sequence")
+expect(!sampleFields.corrected, "clean packet is not corrected")
+let flippedWord = PacketLayout.word(from: samplePacket) ^ (UInt64(1) << 20)
+let flipped = ExtendedHamming.correct(word: flippedWord)
+expect(flipped.corrected, "single bit is corrected")
+expectEqual(flipped.word, PacketLayout.word(from: samplePacket), "single bit restores the word")
+let doubleWord = PacketLayout.word(from: samplePacket) ^ (UInt64(1) << 20) ^ (UInt64(1) << 21)
+let doubled = ExtendedHamming.correct(word: doubleWord)
+expect(doubled.status == .uncorrectable, "two bit errors stay uncorrected")
 
 let started = Date(timeIntervalSince1970: 1_700_000_000)
 let schedule = testPairs.flatMap { pair in Array(repeating: pair, count: config.repeats) }
@@ -175,7 +187,7 @@ var phoneLogs: [String] = []
 live.onLog = { phoneLogs.append($0) }
 feed(live, audio: audio, rate: rate, started: started)
 expect(live.retainedSampleCount < audio.count / 2, "window released processed audio, kept \(live.retainedSampleCount)")
-for packet in sent { live.note(packet) }
+for packet in sent.reversed() { live.note(packet) }
 let analysisPairs = live.finish()
 let analysisTransmissions = analysisPairs.flatMap(\.transmissions).sorted { $0.packet.sequence < $1.packet.sequence }
 expectEqual(analysisTransmissions.count, sent.count, "transmission count")
@@ -186,10 +198,19 @@ for (transmission, expected) in zip(analysisTransmissions, expectedStarts) {
     expect(transmission.demodEndDate != nil, "packet \(transmission.packet.sequence) demod end")
     expect(transmission.detected, "packet \(transmission.packet.sequence) detected")
     expect(transmission.passed, "packet \(transmission.packet.sequence) payload matches")
+    expect(transmission.decodedSequence == transmission.packet.repeatIndex, "decoded sequence")
+    expect(transmission.decodedLowHz == transmission.packet.lowHz, "decoded low")
+    expect(transmission.decodedHighHz == transmission.packet.highHz, "decoded high")
     expect(transmission.packetSNRdB >= 20, "packet snr \(transmission.packetSNRdB)")
 }
 for sequence in 1...sent.count {
-    expect(phoneLogs.contains { $0.hasPrefix("包 \(sequence) 前导对齐=是 解出=") && $0.contains(" 通过=是 解调耗时=") && $0.hasSuffix("ms") }, "result log \(sequence)")
+    expect(phoneLogs.contains { line in
+        line.hasPrefix("包 \(sequence) 前导对齐=是 解出=")
+            && line.contains(" 通过=是 解调耗时=")
+            && line.contains(" 解出序号=")
+            && line.contains(" 是否纠错=")
+            && line.contains(" 纠错后是否通过=是")
+    }, "result log \(sequence)")
     expect(phoneLogs.contains { $0.hasPrefix("包 \(sequence) 结束后窗口剩余 ") && $0.hasSuffix(" 样本") }, "window log \(sequence)")
 }
 expectEqual(analysisPairs.count, 2, "two frequency pairs")
@@ -229,9 +250,13 @@ expect(csv.contains("双频能量比_dB"), "ratio column")
 expect(csv.contains("通过率"), "pass-rate column")
 expect(csv.contains("本包是否通过"), "per-packet pass column")
 expect(csv.contains("解调结束时间"), "demod end column")
+expect(csv.contains("解出低频"), "decoded low column")
+expect(csv.contains("解出高频"), "decoded high column")
+expect(csv.contains("解出序号"), "decoded sequence column")
+expect(csv.contains("是否纠错"), "correction column")
 expect(!csv.contains("ggwave"), "ggwave column removed")
 expect(csv.contains("总分"), "total column")
-expect(csv.contains(PacketFactory.hex(Data([1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]))), "payload hex")
+expect(csv.contains(sent[0].payloadHex), "payload hex")
 let lines = csv.split(separator: "\n")
 expectEqual(lines.count, sent.count + 1, "one header plus one row per packet")
 

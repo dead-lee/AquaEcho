@@ -66,7 +66,7 @@ struct TestConfig: Codable, Equatable {
     /// 不含前后静音的信号时长，供接收端搜索突发。
     var expectedSignalSeconds: Double {
         let config = normalized
-        let bits = Double((PacketLayout.preamble.count + PacketLayout.payloadBytes) * 8)
+        let bits = Double(PacketLayout.bitCount)
         return bits * config.symbolDurationMs / 1_000
     }
 

@@ -22,7 +22,11 @@ enum CSVExporter {
         "本包双频能量比_dB",
         "本包是否检出",
         "本包是否通过",
-        "解调结束时间"
+        "解调结束时间",
+        "解出低频",
+        "解出高频",
+        "解出序号",
+        "是否纠错"
     ]
 
     /// 写入 App Documents。文件名 `AquaEcho_Results_yyyyMMdd_HHmmss.csv`。
@@ -68,7 +72,11 @@ enum CSVExporter {
             number(transmission.packetRatioDB, digits: 2),
             transmission.detected ? "1" : "0",
             transmission.passed ? "1" : "0",
-            field(transmission.demodEndDate.map(timestamp) ?? "")
+            field(transmission.demodEndDate.map(timestamp) ?? ""),
+            transmission.decodedLowHz.map { number($0, digits: 0) } ?? "",
+            transmission.decodedHighHz.map { number($0, digits: 0) } ?? "",
+            transmission.decodedSequence.map(String.init) ?? "",
+            transmission.errorCorrected ? "1" : "0"
         ]
     }
 

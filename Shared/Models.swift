@@ -22,8 +22,12 @@ struct Transmission: Equatable, Identifiable {
     var packetSNRdB: Double
     var packetRatioDB: Double
     var detected: Bool
-    /// 解出的 8 字节与发送载荷逐字节一致。
+    /// 纠错后的 8 字节与发送载荷逐字节一致。
     var passed: Bool
+    var decodedLowHz: Double?
+    var decodedHighHz: Double?
+    var decodedSequence: Int?
+    var errorCorrected: Bool
 
     var id: Int { packet.sequence }
 }

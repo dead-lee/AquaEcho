@@ -149,7 +149,7 @@ final class WatchModel: ObservableObject {
                 for repeatIndex in 0..<config.repeats {
                     if stopRequested { break }
                     sequence += 1
-                    let payload = PacketFactory.randomPayload()
+                    let payload = PacketLayout.encode(lowHz: pair.lowHz, highHz: pair.highHz, sequence: repeatIndex)
                     let rendered = try render(pair: pair, payload: payload, config: config)
                     log("编码完成 \(config.mode.title) \(pair.label) \(rendered.samples.count) 样本 载荷 \(PacketFactory.hex(payload))")
                     status = "\(sequence) · \(pair.label)"

@@ -28,8 +28,8 @@ enum SignalAnalyzer {
         private var highRun = 0
         private var lowRun = 0
         private var scheduleIndex = 0
-        private var pendingPackets: [SentPacket] = []
-        private var pendingHits: [Hit] = []
+        private var pendingPackets: [MatchKey: SentPacket] = [:]
+        private var pendingHits: [MatchKey: Hit] = [:]
         private var transmissions: [Transmission] = []
 
         init(config: TestConfig, schedule: [PlannedPair]) {
@@ -53,14 +53,14 @@ enum SignalAnalyzer {
 
         func note(_ packet: SentPacket) {
             let (updates, logs) = locked { () -> ([Update], [String]) in
+                let key = PacketLayout.matchKey(lowHz: packet.lowHz, highHz: packet.highHz, sequence: packet.repeatIndex)
                 let alreadySeen = transmissions.contains { $0.packet.sequence == packet.sequence }
-                    || pendingPackets.contains { $0.sequence == packet.sequence }
+                    || pendingPackets[key]?.sequence == packet.sequence
                 if alreadySeen { return (drainUpdates(), drainLogs()) }
-                if let hit = pendingHits.first {
-                    pendingHits.removeFirst()
+                if let hit = pendingHits.removeValue(forKey: key) {
                     record(match(packet: packet, hit: hit))
                 } else {
-                    pendingPackets.append(packet)
+                    pendingPackets[key] = packet
                 }
                 return (drainUpdates(), drainLogs())
             }
@@ -72,11 +72,11 @@ enum SignalAnalyzer {
                 if inBurst {
                     closeBurst(end: window.count)
                 }
-                for packet in pendingPackets {
+                for packet in pendingPackets.values {
                     transmissions.append(SignalAnalyzer.missed(packet))
                 }
-                pendingPackets = []
-                pendingHits = []
+                pendingPackets = [:]
+                pendingHits = [:]
                 window.removeAll(keepingCapacity: false)
                 retainedSampleCount = 0
                 cursor = 0
@@ -189,9 +189,10 @@ enum SignalAnalyzer {
                 return
             }
             let slice = Array(window[from..<to])
-            let offset = burstStart - from
             removePrefix(to)
             cursor = 0
+            let trailSamples = Int((config.trailSilenceMs / 1_000 * sampleRate).rounded())
+            removePrefix(min(window.count, symbol * 3, max(0, trailSamples / 2)))
             scheduleIndex += 1
             let demodStarted = Date()
             let fit = SignalAnalyzer.bestBurst(
@@ -205,7 +206,7 @@ enum SignalAnalyzer {
             let decoded = SignalAnalyzer.demodulatedPayload(
                 samples: slice,
                 sampleRate: sampleRate,
-                burstStart: offset,
+                burstStart: fit.start,
                 f0: low,
                 f1: high,
                 symbolSeconds: config.symbolDurationMs / 1_000
@@ -214,7 +215,7 @@ enum SignalAnalyzer {
             let demodMilliseconds = max(0, Int((demodEndDate.timeIntervalSince(demodStarted) * 1_000).rounded()))
             let hit = Hit(
                 payload: decoded.payload,
-                preambleAligned: decoded.preambleAligned,
+                aligned: decoded.aligned,
                 snrDB: fit.snrDB,
                 ratioDB: fit.ratioDB,
                 detected: fit.snrDB >= 5,
@@ -223,22 +224,22 @@ enum SignalAnalyzer {
                 demodMilliseconds: demodMilliseconds,
                 burstIndex: scheduleIndex,
                 lowHz: low,
-                highHz: high
+                highHz: high,
+                decodedLowHz: decoded.lowHz,
+                decodedHighHz: decoded.highHz,
+                decodedSequence: decoded.sequence,
+                corrected: decoded.corrected
             )
-            if pendingPackets.isEmpty {
-                pendingHits.append(hit)
-            } else {
-                let packet = pendingPackets.removeFirst()
+            if let key = hit.matchKey, let packet = pendingPackets.removeValue(forKey: key) {
                 record(match(packet: packet, hit: hit))
+            } else if let key = hit.matchKey, pendingHits[key] == nil {
+                pendingHits[key] = hit
             }
             queuedLogs.append("包 \(scheduleIndex) 结束后窗口剩余 \(window.count) 样本")
         }
 
         private func listenFrequencies() -> (Double, Double)? {
             if inBurst { return (burstLow, burstHigh) }
-            if let packet = pendingPackets.first {
-                return (packet.lowHz, packet.highHz)
-            }
             guard scheduleIndex < schedule.count else { return nil }
             let pair = schedule[scheduleIndex]
             return (pair.lowHz, pair.highHz)
@@ -254,15 +255,22 @@ enum SignalAnalyzer {
                 packetSNRdB: hit.snrDB,
                 packetRatioDB: hit.ratioDB,
                 detected: hit.detected,
-                passed: passed
+                passed: passed,
+                decodedLowHz: hit.decodedLowHz,
+                decodedHighHz: hit.decodedHighHz,
+                decodedSequence: hit.decodedSequence,
+                errorCorrected: hit.corrected
             )
         }
 
         private func resultLine(_ hit: Hit, passed: Bool) -> String {
-            let aligned = hit.preambleAligned ? "是" : "否"
-            let decoded = hit.preambleAligned ? (hit.payload.map(PacketFactory.hex) ?? "空") : "空"
+            let aligned = hit.aligned ? "是" : "否"
+            let decoded = hit.aligned ? (hit.payload.map(PacketFactory.hex) ?? "空") : "空"
             let ok = passed ? "是" : "否"
-            return "包 \(hit.burstIndex) 前导对齐=\(aligned) 解出=\(decoded) 通过=\(ok) 解调耗时=\(hit.demodMilliseconds)ms"
+            let sequence = hit.decodedSequence.map(String.init) ?? "空"
+            let fixed = hit.corrected ? "是" : "否"
+            let after = passed ? "是" : "否"
+            return "包 \(hit.burstIndex) 前导对齐=\(aligned) 解出=\(decoded) 通过=\(ok) 解调耗时=\(hit.demodMilliseconds)ms 解出序号=\(sequence) 是否纠错=\(fixed) 纠错后是否通过=\(after)"
         }
 
         private func record(_ transmission: Transmission) {
@@ -290,7 +298,7 @@ enum SignalAnalyzer {
 
     private struct Hit {
         var payload: Data?
-        var preambleAligned: Bool
+        var aligned: Bool
         var snrDB: Double
         var ratioDB: Double
         var detected: Bool
@@ -300,6 +308,15 @@ enum SignalAnalyzer {
         var burstIndex: Int
         var lowHz: Double
         var highHz: Double
+        var decodedLowHz: Double?
+        var decodedHighHz: Double?
+        var decodedSequence: Int?
+        var corrected: Bool
+
+        var matchKey: MatchKey? {
+            guard let decodedLowHz, let decodedHighHz, let decodedSequence else { return nil }
+            return PacketLayout.matchKey(lowHz: decodedLowHz, highHz: decodedHighHz, sequence: decodedSequence)
+        }
     }
 
     private static func missed(_ packet: SentPacket) -> Transmission {
@@ -310,7 +327,11 @@ enum SignalAnalyzer {
             packetSNRdB: 0,
             packetRatioDB: 0,
             detected: false,
-            passed: false
+            passed: false,
+            decodedLowHz: nil,
+            decodedHighHz: nil,
+            decodedSequence: nil,
+            errorCorrected: false
         )
     }
 
@@ -422,11 +443,15 @@ enum SignalAnalyzer {
     }
 
     private struct DemodOutcome {
-        var preambleAligned: Bool
+        var aligned: Bool
         var payload: Data?
+        var lowHz: Double?
+        var highHz: Double?
+        var sequence: Int?
+        var corrected: Bool
     }
 
-    /// 在检出的突发附近滑动符号网格，用 1 字节 0xAA 对齐，再按两个目标频率的能量逐符号还原 8 字节。
+    /// 在检出的突发附近滑动符号网格，取 64 bit，用扩展汉明码纠正 1 bit 后再解析。
     private static func demodulatedPayload(
         samples: [Float],
         sampleRate: Double,
@@ -436,105 +461,102 @@ enum SignalAnalyzer {
         symbolSeconds: Double
     ) -> DemodOutcome {
         let symbolSamples = max(1, Int((symbolSeconds * sampleRate).rounded()))
-        let preamble = preambleBits()
-        let totalBits = preamble.count + PacketLayout.payloadBytes * 8
+        let totalBits = PacketLayout.bitCount
         let frameSamples = symbolSamples * totalBits
-        guard frameSamples > 0, samples.count >= frameSamples else {
-            return DemodOutcome(preambleAligned: false, payload: nil)
-        }
+        let empty = DemodOutcome(aligned: false, payload: nil, lowHz: nil, highHz: nil, sequence: nil, corrected: false)
+        guard frameSamples > 0, samples.count >= frameSamples else { return empty }
 
         let search = max(symbolSamples, Int(0.12 * sampleRate))
         let coarse = max(1, symbolSamples / 8)
-        guard let coarseBest = bestAlignment(
+        guard let coarseBest = bestFrame(
             samples: samples,
             sampleRate: sampleRate,
             center: burstStart,
             radius: search,
             step: coarse,
             symbolSamples: symbolSamples,
-            preamble: preamble,
+            totalBits: totalBits,
             f0: f0,
             f1: f1
-        ) else {
-            return DemodOutcome(preambleAligned: false, payload: nil)
-        }
-        let aligned = bestAlignment(
+        ) else { return empty }
+        let aligned = bestFrame(
             samples: samples,
             sampleRate: sampleRate,
             center: coarseBest.offset,
             radius: coarse,
             step: 1,
             symbolSamples: symbolSamples,
-            preamble: preamble,
+            totalBits: totalBits,
             f0: f0,
             f1: f1
         ) ?? coarseBest
-        guard aligned.hits == preamble.count,
-              aligned.offset >= 0,
-              aligned.offset + frameSamples <= samples.count else {
-            return DemodOutcome(preambleAligned: false, payload: nil)
-        }
-
-        let bits = symbolBits(
-            samples: samples,
-            sampleRate: sampleRate,
-            offset: aligned.offset,
-            count: totalBits,
-            symbolSamples: symbolSamples,
-            f0: f0,
-            f1: f1
+        guard aligned.rank >= 2 else { return empty }
+        let fields = PacketLayout.decode(aligned.payload)
+        return DemodOutcome(
+            aligned: true,
+            payload: fields.payload,
+            lowHz: fields.lowHz,
+            highHz: fields.highHz,
+            sequence: fields.sequence,
+            corrected: fields.corrected
         )
-        let bytes = bytesFromBits(bits)
-        let preambleCount = PacketLayout.preamble.count
-        guard bytes.count == preambleCount + PacketLayout.payloadBytes,
-              Array(bytes.prefix(preambleCount)) == PacketLayout.preamble else {
-            return DemodOutcome(preambleAligned: false, payload: nil)
-        }
-        return DemodOutcome(preambleAligned: true, payload: Data(bytes.dropFirst(preambleCount)))
     }
 
-    private struct Alignment {
+    private struct FrameLock {
         var offset: Int
-        var hits: Int
+        var rank: Int
         var margin: Double
+        var payload: Data
     }
 
-    private static func bestAlignment(
+    private static func bestFrame(
         samples: [Float],
         sampleRate: Double,
         center: Int,
         radius: Int,
         step: Int,
         symbolSamples: Int,
-        preamble: [Bool],
+        totalBits: Int,
         f0: Double,
         f1: Double
-    ) -> Alignment? {
-        let preambleSamples = preamble.count * symbolSamples
-        var best: Alignment?
+    ) -> FrameLock? {
+        let frameSamples = totalBits * symbolSamples
+        var best: FrameLock?
         var offset = center - radius
         let last = center + radius
         let stride = max(1, step)
         while offset <= last {
-            if offset >= 0, offset + preambleSamples <= samples.count {
-                var hits = 0
-                var margin = 0.0
-                for (index, expected) in preamble.enumerated() {
-                    let start = offset + index * symbolSamples
-                    let end = start + symbolSamples
-                    let decision = bitDecision(
-                        samples: samples[start..<end],
-                        sampleRate: sampleRate,
-                        f0: f0,
-                        f1: f1
-                    )
-                    if decision.one == expected {
-                        hits += 1
+            if offset >= 0, offset + frameSamples <= samples.count {
+                let read = readFrame(
+                    samples: samples,
+                    sampleRate: sampleRate,
+                    offset: offset,
+                    count: totalBits,
+                    symbolSamples: symbolSamples,
+                    f0: f0,
+                    f1: f1
+                )
+                let fixed = ExtendedHamming.correct(word: read.word)
+                let lowCode = Int((fixed.word >> 54) & 0x3FF)
+                let highCode = Int((fixed.word >> 44) & 0x3FF)
+                let frequencyMatch = lowCode == PacketLayout.frequencyCode(f0) && highCode == PacketLayout.frequencyCode(f1)
+                let rank: Int
+                if frequencyMatch {
+                    switch fixed.status {
+                    case .clean: rank = 3
+                    case .corrected: rank = 2
+                    case .uncorrectable: rank = 1
                     }
-                    margin += decision.margin
+                } else {
+                    rank = 0
                 }
-                if best == nil || hits > best!.hits || (hits == best!.hits && margin > best!.margin) {
-                    best = Alignment(offset: offset, hits: hits, margin: margin)
+                if best == nil || rank > best!.rank || (rank == best!.rank && read.margin > best!.margin) {
+                    best = FrameLock(
+                        offset: offset,
+                        rank: rank,
+                        margin: read.margin,
+                        payload: PacketLayout.data(from: read.word)
+                    )
                 }
             }
             offset += stride
@@ -542,7 +564,7 @@ enum SignalAnalyzer {
         return best
     }
 
-    private static func symbolBits(
+    private static func readFrame(
         samples: [Float],
         sampleRate: Double,
         offset: Int,
@@ -550,15 +572,22 @@ enum SignalAnalyzer {
         symbolSamples: Int,
         f0: Double,
         f1: Double
-    ) -> [Bool] {
-        var bits: [Bool] = []
-        bits.reserveCapacity(count)
+    ) -> (word: UInt64, margin: Double) {
+        var word: UInt64 = 0
+        var margin = 0.0
         for index in 0..<count {
             let start = offset + index * symbolSamples
             let end = start + symbolSamples
-            bits.append(bitDecision(samples: samples[start..<end], sampleRate: sampleRate, f0: f0, f1: f1).one)
+            let decision = bitDecision(
+                samples: samples[start..<end],
+                sampleRate: sampleRate,
+                f0: f0,
+                f1: f1
+            )
+            word = (word << 1) | (decision.one ? 1 : 0)
+            margin += decision.margin
         }
-        return bits
+        return (word, margin)
     }
 
     private static func bitDecision(
@@ -570,32 +599,6 @@ enum SignalAnalyzer {
         let low = Goertzel.power(samples: samples, sampleRate: sampleRate, frequency: f0)
         let high = Goertzel.power(samples: samples, sampleRate: sampleRate, frequency: f1)
         return (high > low, abs(high - low))
-    }
-
-    private static func preambleBits() -> [Bool] {
-        var bits: [Bool] = []
-        for byte in PacketLayout.preamble {
-            for shift in stride(from: 7, through: 0, by: -1) {
-                bits.append(((byte >> shift) & 0x01) == 1)
-            }
-        }
-        return bits
-    }
-
-    private static func bytesFromBits(_ bits: [Bool]) -> [UInt8] {
-        var bytes: [UInt8] = []
-        var index = 0
-        while index + 8 <= bits.count {
-            var byte: UInt8 = 0
-            for shift in 0..<8 {
-                if bits[index + shift] {
-                    byte |= 1 << (7 - shift)
-                }
-            }
-            bytes.append(byte)
-            index += 8
-        }
-        return bytes
     }
 
     private static func aggregate(_ transmissions: [Transmission], mode: TestMode) -> [PairScore] {
