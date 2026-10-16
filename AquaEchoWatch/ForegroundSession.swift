@@ -19,8 +19,17 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
 
     func startIfNeeded() {
         guard !userEnded else { return }
-        if let session, session.state == .running || session.state == .scheduled || session.state == .notStarted {
-            return
+        if let session {
+            switch session.state {
+            case .running, .scheduled, .notStarted:
+                return
+            case .invalid:
+                break
+            @unknown default:
+                return
+            }
+            session.invalidate()
+            self.session = nil
         }
         let next = WKExtendedRuntimeSession()
         next.delegate = self
@@ -69,13 +78,20 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
         error: Error?
     ) {
         Task { @MainActor in
-            self.sessionDidInvalidate(reason, detail: error?.localizedDescription)
+            self.sessionDidInvalidate(extendedRuntimeSession, reason, detail: error?.localizedDescription)
         }
     }
 
-    private func sessionDidInvalidate(_ reason: WKExtendedRuntimeSessionInvalidationReason, detail: String?) {
+    private func sessionDidInvalidate(
+        _ extendedRuntimeSession: WKExtendedRuntimeSession,
+        _ reason: WKExtendedRuntimeSessionInvalidationReason,
+        detail: String?
+    ) {
+        guard session === extendedRuntimeSession || session == nil else { return }
         running = false
-        session = nil
+        if session === extendedRuntimeSession {
+            session = nil
+        }
         switch reason {
         case .resignedFrontmost:
             onEvent?("按数码表冠离开应用，invalidate 并停止发声")
@@ -83,10 +99,19 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
             endBecauseUserStoppedOrLeft()
         case .none:
             status = "已结束前台保持"
-        case .expired, .sessionInProgress, .suppressedBySystem, .error:
+        case .sessionInProgress:
             if !userEnded {
                 status = "前台保持中"
                 onEvent?("系统结束了延长运行（\(Self.name(reason))\(detail.map { "：\($0)" } ?? "")）。熄屏、变暗、返回菜单不会因此调用 invalidate")
+            }
+        case .expired, .suppressedBySystem, .error:
+            if !userEnded {
+                status = "前台保持中"
+                onEvent?("系统结束了延长运行（\(Self.name(reason))\(detail.map { "：\($0)" } ?? "")）。熄屏、变暗、返回菜单不会因此调用 invalidate")
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    self.startIfNeeded()
+                }
             }
         @unknown default:
             break

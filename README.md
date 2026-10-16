@@ -61,7 +61,9 @@ iPhone 接收时间是检出该突发的那一次 `ingest(samples:at:sampleRate:
 
 本机 watchOS SDK 的构造方法是 `WKExtendedRuntimeSession()`，没有 `sessionType` 参数。sessionType 固定为 self-care：`AquaEchoWatch/Info.plist` 的 `WKBackgroundModes` 只有 `self-care`。不在 `applicationWillResignActive` 或启动过早时创建会话，只在 `applicationDidBecomeActive` 之后创建并 `start()`。日志记录「延长运行已在 applicationDidBecomeActive 后启动」。
 
-启动成功后，熄屏、屏幕变暗、返回菜单都不调用 `invalidate()`，发送继续。只有用户点击停止按钮，或按数码表冠离开应用（系统原因 `resignedFrontmost`）时，才调用 `invalidate()` 结束会话并停止发声。
+启动成功后，熄屏、屏幕变暗、返回菜单都不调用 `invalidate()`，发送继续。只有用户点击停止按钮，或按数码表冠离开应用（系统原因 `resignedFrontmost`）时，才调用 `invalidate()` 结束会话并停止发声。`resignedFrontmost` 不重建会话。
+
+`startIfNeeded` 发现当前会话的状态是 `.running`、`.scheduled` 或 `.notStarted` 时直接返回，不再创建新的 `WKExtendedRuntimeSession`。只有会话为 nil，或状态为 `.invalid` 时才新建。新建之前如果旧会话还在，先 `invalidate()` 并置为 nil。系统以 `.error`、`.expired` 或 `.suppressedBySystem` 收回会话，且不是用户主动结束时，0.5 秒后调用 `startIfNeeded` 重建。失效回调只处理当前这一次会话，避免清掉刚建好的新会话。
 
 手表界面的根布局是普通 `VStack`，不用 `ScrollView`，也不使用 `.scrollDisabled`。内容超出屏幕时，用 `.contentShape(Rectangle())` 和 `DragGesture` 做只响应手指的滚动。不添加 `.digitalCrownRotation`，也不写任何表冠事件。音频播放期间由系统把数码表冠分给音量调节。程序不直接改系统音量。
 
