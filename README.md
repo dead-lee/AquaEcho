@@ -53,7 +53,7 @@ Hit 和 SentPacket 按解出的频率对和序号配对。不再按 `pendingHits
 ## 怎么跑
 
 1. 用 Xcode 打开 `AquaEcho.xcodeproj`，给两个 target 选好你的开发团队。Bundle ID 目前是 `com.deadlee.AquaEcho`。
-2. 把 iPhone App 装到手机上，Watch App 会一起装上。打开手表上的 AquaEcho 后让它留在前台；应用自己会申请延长运行，熄屏也不会被系统送回表盘。
+2. 真机安装用 `Scripts/install-devices.sh`。脚本备份 Documents，卸掉手机上已有的 AquaEcho，再完整安装内嵌了手表包的 iPhone 应用。增量更新只会换掉手机上的包，手表会停在旧构建；卸掉之后的完整安装才会让手机经配对把手表包推过去。装完后让手表解锁并靠近手机，两边界面的构建号应相同。打开手表上的 AquaEcho 后让它留在前台；应用自己会申请延长运行，熄屏也不会被系统送回表盘。
 3. 在 iPhone 上设好频率、步进、重复次数，点「同步到 Watch」，再点「开始测试」。
 4. 把手表扬声器靠近 iPhone 底部麦克风。波形峰值归一化到 0.98。程序不修改系统音量。`AVAudioSession` 类别是 `.playback`。`WatchRootView` 用 `.digitalCrownRotation` 调节播放音量，绑定值范围 `0.0...1.0`，步进 `0.05`。初始值是当前 `AVAudioSession.sharedInstance().outputVolume`。旋转表冠时把该值写入 `player.volume` 和 `engine.mainMixerNode.outputVolume`。界面显示这个音量的百分比。低于 0.95 时文字固定为「音量不足，请旋转数码表冠调到最大」，发送仍然继续。开始发送前读取 `AVAudioSession.sharedInstance().outputVolume`，并写入日志「音量 outputVolume=0.xx」。
 
