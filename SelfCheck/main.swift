@@ -82,6 +82,27 @@ expectEqual(ConvolutionalCode.decode(probeCoded), probeBits, "viterbi round trip
 var damagedCode = probeCoded
 damagedCode[40].toggle()
 expectEqual(ConvolutionalCode.decode(damagedCode), probeBits, "viterbi corrects one coded bit")
+let symbolOrder = OFDMModem.interleaveOrder(count: 60, symbolIndex: 0)
+expectEqual(
+    symbolOrder,
+    [7, 18, 39, 19, 37, 35, 25, 16, 33, 49, 58, 54, 4, 24, 6, 55, 26, 31, 36, 59, 38, 2, 1, 46, 32, 10, 20, 9, 42, 5, 48, 52, 45, 51, 30, 8, 34, 22, 15, 23, 57, 41, 12, 28, 14, 43, 21, 50, 44, 27, 17, 3, 47, 53, 13, 56, 11, 29, 40, 0],
+    "symbol 0 uses java.util.Random seed 0"
+)
+expect(
+    OFDMModem.interleaveOrder(count: 60, symbolIndex: 1) != symbolOrder,
+    "symbol 1 uses a different seed"
+)
+let scattered = [symbolOrder[29], symbolOrder[30], symbolOrder[31], symbolOrder[32]]
+expect(Set(scattered).count == 4 && (scattered.max()! - scattered.min()!) > 3, "adjacent carriers are not adjacent coded bits \(scattered)")
+var pattern = Array(repeating: false, count: 60)
+for index in [1, 4, 9, 29, 30, 31, 32] {
+    pattern[index] = true
+}
+expectEqual(
+    OFDMModem.deinterleave(OFDMModem.interleave(pattern, symbolIndex: 2), symbolIndex: 2),
+    pattern,
+    "symbol 2 interleave round trip"
+)
 let rendered = OFDMModem.playback(
     bits: probeCoded,
     f0: 1_000,
@@ -541,6 +562,45 @@ if let retried = advanceResult.first(where: { $0.packet.sequence == 6 }) {
 }
 expect(advanceResult.first { $0.packet.sequence == 3 }?.passed != true, "wiped packet itself is not a pass")
 expect(advanceRun.logs.contains { $0.hasPrefix("解调=失败 ") }, "wiped packet is demodulated and logged as failed")
+
+/// 直达声后面加一个更强的回声。相关峰会锁到回声上；最早到达仍应落在直达声上。
+func withEcho(_ packet: [Float], delay: Int, gain: Float) -> [Float] {
+    var mixed = [Float](repeating: 0, count: packet.count + delay)
+    for (index, sample) in packet.enumerated() {
+        mixed[index] += sample
+        mixed[index + delay] += gain * sample
+    }
+    return mixed
+}
+
+let echoCase = fieldPacket(7, 0, 0x66)
+let echoSource = playbackPacket(echoCase.payload, lowHz: band.lowHz, highHz: band.highHz)
+for delay in [36, 60] {
+    let mixed = withEcho(echoSource, delay: delay, gain: 2)
+    let origin = 8_000
+    let buffer = placePackets([(origin, mixed)], length: origin + mixed.count + 4_096)
+    let trueStart = origin + leadSamples
+    let filtered = OFDMModem.bandpass(buffer, lowHz: band.lowHz, highHz: band.highHz, sampleRate: rate)
+    let correlation = OFDMModem.correlate(signal: filtered, template: probePlan.preamble)
+    let from = max(0, trueStart - 200)
+    let to = min(correlation.count - 1, trueStart + delay + 200)
+    var peak = from
+    for index in from...to where correlation[index] > correlation[peak] {
+        peak = index
+    }
+    expect(peak >= trueStart + delay - 8, "echo \(delay) pulls the correlation peak late, delta \(peak - trueStart)")
+    let arrival = OFDMModem.earliestArrival(
+        filtered: filtered,
+        correlation: correlation,
+        peakIndex: peak,
+        preamble: probePlan.preamble,
+        sampleRate: rate
+    )
+    expect(abs(arrival - trueStart) <= 8, "echo \(delay) earliest path delta \(arrival - trueStart)")
+    expect(abs(arrival - trueStart) < abs(arrival - (trueStart + delay)), "echo \(delay) sync stays on the direct path")
+    let echoed = receivePackets(buffer, schedule: [band], packets: [echoCase.sent]).transmissions
+    expect(echoed.first?.passed == true, "echo \(delay) samples still decodes")
+}
 
 // 静音不应得到高分。
 let silentReceiver = SignalAnalyzer.Receiver(

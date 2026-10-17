@@ -100,13 +100,14 @@ enum OFDMModem {
         let trainingBody = synthesize(bits: plan.trainingBits, carriers: plan.carriers, ns: plan.ns)
         output.append(contentsOf: withPrefix(trainingBody, cp: plan.cp))
         var cursor = 0
-        for count in plan.dataCounts {
+        for (symbolIndex, count) in plan.dataCounts.enumerated() {
             var data = Array(bits[cursor..<(cursor + count)])
             cursor += count
             if data.count < plan.carriers.count {
                 data.append(contentsOf: repeatElement(false, count: plan.carriers.count - data.count))
             }
-            let transmitted = zip(previous, data).map { $0 != $1 }
+            let arranged = interleave(data, symbolIndex: symbolIndex)
+            let transmitted = zip(previous, arranged).map { $0 != $1 }
             previous = transmitted
             let body = synthesize(bits: transmitted, carriers: plan.carriers, ns: plan.ns)
             output.append(contentsOf: withPrefix(body, cp: plan.cp))
@@ -143,9 +144,8 @@ enum OFDMModem {
             let start = symbolStart + (index + 1) * plan.symbolSamples
             guard let spectrum = spectrum(window: window, bodyStart: start + plan.cp, plan: plan) else { return nil }
             let equalized = zip(spectrum.carriers, weights).map { multiply($0, $1) }
-            for carrier in 0..<count {
-                bits.append(isOne(equalized[carrier], previous: previous[carrier]))
-            }
+            let symbolBits = zip(equalized, previous).map { isOne($0, previous: $1) }
+            bits.append(contentsOf: deinterleave(symbolBits, symbolIndex: index).prefix(count))
             previous = equalized
             readings.append(reading(signal: spectrum.carriers, noise: spectrum.noise))
         }
@@ -213,6 +213,67 @@ enum OFDMModem {
             re: lhs.re * rhs.re - lhs.im * rhs.im,
             im: lhs.re * rhs.im + lhs.im * rhs.re
         )
+    }
+
+    /// shuffleArray：种子是数据符号序号，从 0 起。随机数是 java.util.Random 的 48 位线性同余，不是 Swift 的生成器。
+    static func interleave(_ bits: [Bool], symbolIndex: Int) -> [Bool] {
+        let order = interleaveOrder(count: bits.count, symbolIndex: symbolIndex)
+        return order.map { bits[$0] }
+    }
+
+    /// unshuffle：用同一序号再走一遍打乱，把位置映射还原。
+    static func deinterleave(_ bits: [Bool], symbolIndex: Int) -> [Bool] {
+        let order = interleaveOrder(count: bits.count, symbolIndex: symbolIndex)
+        var restored = [Bool](repeating: false, count: bits.count)
+        for position in bits.indices {
+            restored[order[position]] = bits[position]
+        }
+        return restored
+    }
+
+    static func interleaveOrder(count: Int, symbolIndex: Int) -> [Int] {
+        var order = Array(0..<count)
+        guard count > 1 else { return order }
+        var random = JavaRandom(seed: symbolIndex)
+        var index = count - 1
+        while index > 0 {
+            let choice = random.nextInt(index + 1)
+            order.swapAt(choice, index)
+            index -= 1
+        }
+        return order
+    }
+
+    /// java.util.Random。种子先异或 0x5DEECE66D，再保留低 48 位。
+    private struct JavaRandom {
+        private var seed: UInt64
+
+        init(seed: Int) {
+            let value = UInt64(bitPattern: Int64(seed))
+            self.seed = (value ^ 0x5DEECE66D) & 0xFFFFFFFFFFFF
+        }
+
+        private mutating func next(bits: Int) -> Int32 {
+            seed = (seed &* 0x5DEECE66D &+ 0xB) & 0xFFFFFFFFFFFF
+            return Int32(truncatingIfNeeded: seed >> UInt64(48 - bits))
+        }
+
+        mutating func nextInt(_ bound: Int) -> Int {
+            let bound = Int32(bound)
+            var sample = next(bits: 31)
+            let mask = bound &- 1
+            if bound & mask == 0 {
+                sample = Int32(truncatingIfNeeded: (Int64(bound) * Int64(sample)) >> 31)
+            } else {
+                var draw = sample
+                sample = draw % bound
+                while draw &- sample &+ mask < 0 {
+                    draw = next(bits: 31)
+                    sample = draw % bound
+                }
+            }
+            return Int(sample)
+        }
     }
 
     /// 相位落在 ±90° 以外视为两个符号不同，差分编码下这就是数据 1。
@@ -348,6 +409,200 @@ enum OFDMModem {
 
     private static let fftLock = NSLock()
     private static var fftSetups: [vDSP_Length: FFTSetup] = [:]
+    private static var bluesteinPlans: [Int: BluesteinPlan] = [:]
+    private static var cachedPreambleCount = 0
+    private static var cachedPreambleReal: [Float] = []
+    private static var cachedPreambleImag: [Float] = []
+
+    /// 9360 不是 2 的幂，vDSP 的任意长度 DFT 也不含因子 13。用 Bluestein 把精确 N 点变换换成 2 的幂 FFT。
+    private struct BluesteinPlan {
+        var size: Int
+        var log2n: vDSP_Length
+        var chirpReal: [Float]
+        var chirpImag: [Float]
+        var kernelReal: [Float]
+        var kernelImag: [Float]
+    }
+
+    private static func preambleSpectrum(_ preamble: [Float]) -> (real: [Float], imag: [Float]) {
+        fftLock.lock()
+        if cachedPreambleCount == preamble.count, cachedPreambleReal.count == preamble.count {
+            let real = cachedPreambleReal
+            let imag = cachedPreambleImag
+            fftLock.unlock()
+            return (real, imag)
+        }
+        fftLock.unlock()
+        let spectrum = forwardDFT(preamble, [Float](repeating: 0, count: preamble.count))
+        fftLock.lock()
+        cachedPreambleCount = preamble.count
+        cachedPreambleReal = spectrum.real
+        cachedPreambleImag = spectrum.imag
+        fftLock.unlock()
+        return spectrum
+    }
+
+    private static func forwardDFT(_ realIn: [Float], _ imagIn: [Float]) -> (real: [Float], imag: [Float]) {
+        transformDFT(realIn, imagIn, inverse: false)
+    }
+
+    private static func inverseDFT(_ realIn: [Float], _ imagIn: [Float]) -> (real: [Float], imag: [Float]) {
+        transformDFT(realIn, imagIn, inverse: true)
+    }
+
+    /// 逆变换用共轭输入再共轭输出，尺度不影响后面的归一化冲激峰。
+    private static func transformDFT(_ realIn: [Float], _ imagIn: [Float], inverse: Bool) -> (real: [Float], imag: [Float]) {
+        let length = realIn.count
+        guard length > 1, imagIn.count == length else { return (realIn, imagIn) }
+        let plan = bluesteinPlan(length: length)
+        let inputReal = realIn
+        let inputImag = inverse ? imagIn.map { -$0 } : imagIn
+        var paddedReal = [Float](repeating: 0, count: plan.size)
+        var paddedImag = [Float](repeating: 0, count: plan.size)
+        for index in 0..<length {
+            let chirpReal = plan.chirpReal[index]
+            let chirpImag = plan.chirpImag[index]
+            let sampleReal = inputReal[index]
+            let sampleImag = inputImag[index]
+            paddedReal[index] = sampleReal * chirpReal - sampleImag * chirpImag
+            paddedImag[index] = sampleReal * chirpImag + sampleImag * chirpReal
+        }
+        let convolved = circularConvolve(
+            paddedReal,
+            paddedImag,
+            kernelReal: plan.kernelReal,
+            kernelImag: plan.kernelImag,
+            log2n: plan.log2n
+        )
+        var outReal = [Float](repeating: 0, count: length)
+        var outImag = [Float](repeating: 0, count: length)
+        for index in 0..<length {
+            let chirpReal = plan.chirpReal[index]
+            let chirpImag = plan.chirpImag[index]
+            let sampleReal = convolved.real[index]
+            let sampleImag = convolved.imag[index]
+            outReal[index] = sampleReal * chirpReal - sampleImag * chirpImag
+            outImag[index] = sampleReal * chirpImag + sampleImag * chirpReal
+        }
+        if inverse {
+            return (outReal, outImag.map { -$0 })
+        }
+        return (outReal, outImag)
+    }
+
+    private static func bluesteinPlan(length: Int) -> BluesteinPlan {
+        fftLock.lock()
+        if let plan = bluesteinPlans[length] {
+            fftLock.unlock()
+            return plan
+        }
+        fftLock.unlock()
+        let plan = makeBluesteinPlan(length: length)
+        fftLock.lock()
+        if let existing = bluesteinPlans[length] {
+            fftLock.unlock()
+            return existing
+        }
+        bluesteinPlans[length] = plan
+        fftLock.unlock()
+        return plan
+    }
+
+    private static func makeBluesteinPlan(length: Int) -> BluesteinPlan {
+        var size = 1
+        var power = 0
+        while size < length * 2 - 1 {
+            size <<= 1
+            power += 1
+        }
+        let log2n = vDSP_Length(power)
+        var chirpReal = [Float](repeating: 0, count: length)
+        var chirpImag = [Float](repeating: 0, count: length)
+        var kernelReal = [Float](repeating: 0, count: size)
+        var kernelImag = [Float](repeating: 0, count: size)
+        for index in 0..<length {
+            let turns = Double(index * index) / (2 * Double(length))
+            let wrapped = (turns - turns.rounded(.towardZero)) * 2 * Double.pi
+            let real = Float(cos(wrapped))
+            let imag = Float(-sin(wrapped))
+            chirpReal[index] = real
+            chirpImag[index] = imag
+            kernelReal[index] = real
+            kernelImag[index] = -imag
+            if index > 0 {
+                kernelReal[size - index] = real
+                kernelImag[size - index] = -imag
+            }
+        }
+        var kernelOutReal = [Float](repeating: 0, count: size)
+        var kernelOutImag = [Float](repeating: 0, count: size)
+        splitTransform(
+            FFTDirection(kFFTDirection_Forward),
+            &kernelReal,
+            &kernelImag,
+            &kernelOutReal,
+            &kernelOutImag,
+            log2n: log2n
+        )
+        return BluesteinPlan(
+            size: size,
+            log2n: log2n,
+            chirpReal: chirpReal,
+            chirpImag: chirpImag,
+            kernelReal: kernelOutReal,
+            kernelImag: kernelOutImag
+        )
+    }
+
+    /// `kernel` 已经是 chirp 核的正变换，这里只变换输入，相乘后再逆变换。
+    private static func circularConvolve(
+        _ leftReal: [Float],
+        _ leftImag: [Float],
+        kernelReal: [Float],
+        kernelImag: [Float],
+        log2n: vDSP_Length
+    ) -> (real: [Float], imag: [Float]) {
+        let size = leftReal.count
+        var leftInReal = leftReal
+        var leftInImag = leftImag
+        var leftOutReal = [Float](repeating: 0, count: size)
+        var leftOutImag = [Float](repeating: 0, count: size)
+        splitTransform(FFTDirection(kFFTDirection_Forward), &leftInReal, &leftInImag, &leftOutReal, &leftOutImag, log2n: log2n)
+        for index in 0..<size {
+            let real = leftOutReal[index]
+            let imag = leftOutImag[index]
+            leftInReal[index] = real * kernelReal[index] - imag * kernelImag[index]
+            leftInImag[index] = real * kernelImag[index] + imag * kernelReal[index]
+        }
+        splitTransform(FFTDirection(kFFTDirection_Inverse), &leftInReal, &leftInImag, &leftOutReal, &leftOutImag, log2n: log2n)
+        return (leftOutReal, leftOutImag)
+    }
+
+    private static func splitTransform(
+        _ direction: FFTDirection,
+        _ inReal: inout [Float],
+        _ inImag: inout [Float],
+        _ outReal: inout [Float],
+        _ outImag: inout [Float],
+        log2n: vDSP_Length
+    ) {
+        guard let setup = fftSetup(log2n: log2n) else { return }
+        inReal.withUnsafeMutableBufferPointer { inRealPointer in
+            inImag.withUnsafeMutableBufferPointer { inImagPointer in
+                outReal.withUnsafeMutableBufferPointer { outRealPointer in
+                    outImag.withUnsafeMutableBufferPointer { outImagPointer in
+                        guard let inRealBase = inRealPointer.baseAddress,
+                              let inImagBase = inImagPointer.baseAddress,
+                              let outRealBase = outRealPointer.baseAddress,
+                              let outImagBase = outImagPointer.baseAddress else { return }
+                        var input = DSPSplitComplex(realp: inRealBase, imagp: inImagBase)
+                        var output = DSPSplitComplex(realp: outRealBase, imagp: outImagBase)
+                        vDSP_fft_zop(setup, &input, 1, &output, 1, log2n, direction)
+                    }
+                }
+            }
+        }
+    }
 
     /// Swift 的 `vDSP.FFT` 实际只变换 2^(log2n-1) 点，超过 65536 的延迟会变成 0。这里直接用 C 接口。
     private static func fftSetup(log2n: vDSP_Length) -> FFTSetup? {
@@ -359,8 +614,99 @@ enum OFDMModem {
         return setup
     }
 
+    /// find_symbol.m 的离线同步。相关峰只是入口：先向前最多 960 点，取仍超过峰值 0.4 倍的最早位置，
+    /// 再从前 300 点起取一段和前导等长的录音做信道估计，用最早的冲激峰当作前导起点。
+    /// find_symbol 里加回的 10000 点只是因为他们先裁掉了文件开头，这里的下标已经在整段录音上。
+    static func earliestArrival(
+        filtered: [Float],
+        correlation: [Float],
+        peakIndex: Int,
+        preamble: [Float],
+        sampleRate: Double
+    ) -> Int {
+        guard correlation.indices.contains(peakIndex), preamble.count > 1, sampleRate > 0 else { return peakIndex }
+        let threshold = correlation[peakIndex] * 0.4
+        var leading = peakIndex
+        let seekFrom = max(0, peakIndex - 960)
+        if threshold > 0 {
+            for index in seekFrom...peakIndex where correlation[index] > threshold {
+                leading = index
+                break
+            }
+        }
+        let windowStart = leading - 300
+        let length = preamble.count
+        guard windowStart >= 0, windowStart + length <= filtered.count else { return leading }
+        let segment = Array(filtered[windowStart..<(windowStart + length)])
+        let received = forwardDFT(segment, [Float](repeating: 0, count: length))
+        let transmitted = preambleSpectrum(preamble)
+        var channelReal = [Float](repeating: 0, count: length)
+        var channelImag = [Float](repeating: 0, count: length)
+        let delta = sampleRate / Double(length)
+        let begin = Int((1_000 / delta).rounded()) - 1
+        let end = Int((4_000 / delta).rounded()) - 1
+        guard begin >= 0, end < length, begin <= end else { return leading }
+        var peakMagnitude = Float(0)
+        for bin in begin...end {
+            let magnitude = (transmitted.real[bin] * transmitted.real[bin] + transmitted.imag[bin] * transmitted.imag[bin]).squareRoot()
+            if magnitude > peakMagnitude { peakMagnitude = magnitude }
+        }
+        let floor = peakMagnitude * 1e-4
+        for bin in begin...end {
+            let kernelReal = transmitted.real[bin]
+            let kernelImag = transmitted.imag[bin]
+            let magnitude = (kernelReal * kernelReal + kernelImag * kernelImag).squareRoot()
+            if magnitude < floor { continue }
+            let denominator = magnitude * magnitude
+            let real = received.real[bin]
+            let imag = received.imag[bin]
+            channelReal[bin] = (real * kernelReal + imag * kernelImag) / denominator
+            channelImag[bin] = (imag * kernelReal - real * kernelImag) / denominator
+        }
+        let response = inverseDFT(channelReal, channelImag)
+        var magnitude = [Double](repeating: 0, count: length)
+        var highest = 0.0
+        for index in 0..<length {
+            let value = Double(response.real[index] * response.real[index] + response.imag[index] * response.imag[index]).squareRoot()
+            magnitude[index] = value
+            if value > highest { highest = value }
+        }
+        guard highest > 0 else { return leading }
+        let path = earliestImpulse(magnitude, peak: highest)
+        return min(max(0, windowStart + path), filtered.count - 1)
+    }
+
+    /// channe_look_back：噪声门限是尾部均值的 1.5 倍再加 0.15，在最高峰及其后 10 点之前取最早的峰。返回值按 Matlab 下标，第一点是 1。
+    private static func earliestImpulse(_ magnitude: [Double], peak: Double) -> Int {
+        let normalized = magnitude.map { $0 / peak }
+        let tailCount = min(501, normalized.count)
+        let tail = normalized.suffix(tailCount)
+        let noise = tail.reduce(0, +) / Double(tailCount) * 1.5 + 0.15
+        let strongest = normalized.indices.max { normalized[$0] < normalized[$1] } ?? 0
+        let slice = min(normalized.count, strongest + 11)
+        var peaks: [(index: Int, height: Double)] = []
+        for index in 0..<slice {
+            let value = normalized[index]
+            guard value >= noise else { continue }
+            let left = index > 0 ? normalized[index - 1] : value - 1
+            let right = index + 1 < slice ? normalized[index + 1] : value - 1
+            if value > left && value > right {
+                peaks.append((index, value))
+            }
+        }
+        var kept: [Int] = []
+        var remaining = peaks
+        while !remaining.isEmpty {
+            let best = remaining.max { $0.height < $1.height }!
+            kept.append(best.index)
+            remaining.removeAll { abs($0.index - best.index) < 5 }
+        }
+        let earliest = kept.min() ?? strongest
+        return earliest + 1
+    }
+
     /// Naiser_check_valid：在相关峰前后 1200 点、步长 8 上算差分相关。
-    /// 得分达到 0.6 才算通过。返回的 start 是得分平台的后沿，供核对；接收端对齐用相关峰。
+    /// 得分达到 0.6 才算通过。返回的 start 是得分平台的后沿，供核对；符号起点用 earliestArrival。
     static func naiserLock(samples: [Float], peakIndex: Int) -> (start: Int, score: Double)? {
         let preambleLength = naiserPN.count * (naiserNu + naiserN0)
         let from = max(0, peakIndex - naiserWindow)

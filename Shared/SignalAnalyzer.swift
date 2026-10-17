@@ -151,15 +151,22 @@ enum SignalAnalyzer {
                         rejectedLocal = max(rejectedLocal, candidate + 2_400)
                         continue
                     }
-                    // evalSegv2 只用 Naiser 当门限，符号起点用相关峰本身。
-                    let symbolStart = candidate + plan.preamble.count + plan.gap
+                    // Naiser 只做门限。符号起点用 find_symbol 的最早到达，不用相关峰本身。
+                    let arrival = OFDMModem.earliestArrival(
+                        filtered: audio,
+                        correlation: correlation,
+                        peakIndex: candidate,
+                        preamble: plan.preamble,
+                        sampleRate: sampleRate
+                    )
+                    let symbolStart = arrival + plan.preamble.count + plan.gap
                     let packetEndLocal = symbolStart + symbolCount * plan.symbolSamples
                     if packetEndLocal > audio.count {
                         consume(upToLocal: candidate, plan: plan, pair: pair)
                         return
                     }
                     if let demod = OFDMModem.demodulate(window: audio, symbolStart: symbolStart, plan: plan) {
-                        accept(demod, preambleAbsolute: emitted + candidate)
+                        accept(demod, preambleAbsolute: emitted + arrival)
                         let packetEnd = emitted + symbolStart + symbolCount * plan.symbolSamples
                         noteSkipped(from: searchFrom, to: packetEnd)
                         searchFrom = packetEnd
