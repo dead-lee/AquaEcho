@@ -51,12 +51,21 @@ final class WatchModel: ObservableObject {
         WatchActivation.onDidBecomeActive = { [weak self] in
             self?.startExtendedRuntimeAfterBecomeActive()
         }
+        WatchActivation.onWillResignActive = { [weak self] in
+            self?.log("applicationWillResignActive 构建 \(AppBuild.number)")
+            self?.flushLogs(force: true)
+        }
+        WatchActivation.onDidEnterBackground = { [weak self] in
+            self?.log("applicationDidEnterBackground 构建 \(AppBuild.number)")
+            self?.flushLogs(force: true)
+        }
     }
 
     func startExtendedRuntimeAfterBecomeActive() {
-        log("延长运行已在 applicationDidBecomeActive 后启动")
+        log("延长运行已在 applicationDidBecomeActive 后启动 构建 \(AppBuild.number)")
         foreground.startIfNeeded()
         foregroundStatus = foreground.status
+        flushLogs(force: true)
     }
 
     func noteScenePhase(_ phase: ScenePhase) {
@@ -202,8 +211,8 @@ final class WatchModel: ObservableObject {
         }
     }
 
-    private func flushLogs() {
-        guard !holdLogSync, !pendingLogs.isEmpty else { return }
+    private func flushLogs(force: Bool = false) {
+        guard (force || !holdLogSync), !pendingLogs.isEmpty else { return }
         let batch = pendingLogs.joined(separator: "\n")
         if link.send(WCEnvelope(kind: .log, log: batch)) {
             pendingLogs = []
@@ -242,4 +251,6 @@ final class WatchModel: ObservableObject {
 @MainActor
 enum WatchActivation {
     static var onDidBecomeActive: (() -> Void)?
+    static var onWillResignActive: (() -> Void)?
+    static var onDidEnterBackground: (() -> Void)?
 }

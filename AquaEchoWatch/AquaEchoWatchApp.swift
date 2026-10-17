@@ -7,6 +7,18 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate {
             WatchActivation.onDidBecomeActive?()
         }
     }
+
+    func applicationWillResignActive() {
+        Task { @MainActor in
+            WatchActivation.onWillResignActive?()
+        }
+    }
+
+    func applicationDidEnterBackground() {
+        Task { @MainActor in
+            WatchActivation.onDidEnterBackground?()
+        }
+    }
 }
 
 @main

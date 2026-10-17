@@ -16,26 +16,57 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
 
     private var session: WKExtendedRuntimeSession?
     private var userEnded = false
+    private var startRequestedAt: Date?
 
     func startIfNeeded() {
-        guard !userEnded else { return }
+        guard !userEnded else {
+            onEvent?("延长运行未启动：用户已结束")
+            return
+        }
         if let session {
             switch session.state {
-            case .running, .scheduled, .notStarted:
+            case .running:
+                onEvent?("延长运行已在运行，跳过")
+                return
+            case .scheduled, .notStarted:
+                let waited = Date().timeIntervalSince(startRequestedAt ?? .distantPast)
+                if waited < 1 {
+                    onEvent?(String(
+                        format: "延长运行等待开始 state=%@ 已等待 %.2f 秒",
+                        locale: Locale(identifier: "en_US_POSIX"),
+                        Self.stateName(session.state),
+                        waited
+                    ))
+                    return
+                }
+                onEvent?("延长运行 \(Self.stateName(session.state)) 超过 1 秒仍未运行，作废后重开")
+                replaceSession(dropping: session)
                 return
             case .invalid:
-                break
+                onEvent?("延长运行已失效，重新申请")
+                self.session = nil
             @unknown default:
+                onEvent?("延长运行未知状态 rawValue=\(session.state.rawValue)，作废后重开")
+                replaceSession(dropping: session)
                 return
             }
-            session.invalidate()
-            self.session = nil
         }
+        beginSession()
+    }
+
+    private func replaceSession(dropping old: WKExtendedRuntimeSession) {
+        beginSession()
+        old.invalidate()
+    }
+
+    private func beginSession() {
         let next = WKExtendedRuntimeSession()
         next.delegate = self
         session = next
+        startRequestedAt = Date()
         next.start()
         status = "正在申请前台"
+        onEvent?("已调用 start()，调用后 state=\(Self.stateName(next.state)) rawValue=\(next.state.rawValue)")
     }
 
     /// 上一次若已因停止或表冠离开而结束，下次发送前再开一个 self-care 会话。
@@ -45,12 +76,19 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
     }
 
     func noteScenePhase(_ phase: ScenePhase) {
+        let name: String
         switch phase {
-        case .active, .inactive, .background:
-            break
+        case .active:
+            name = "active"
+        case .inactive:
+            name = "inactive"
+        case .background:
+            name = "background"
         @unknown default:
-            break
+            name = "unknown"
         }
+        let state = session.map { "\(Self.stateName($0.state)) rawValue=\($0.state.rawValue)" } ?? "无会话"
+        onEvent?("场景阶段=\(name) 会话=\(state) 前台保持=\(running ? "是" : "否")")
     }
 
     func endBecauseUserStoppedOrLeft() {
@@ -65,6 +103,7 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
     nonisolated func extendedRuntimeSessionDidStart(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
         Task { @MainActor in
             self.running = true
+            self.startRequestedAt = nil
             self.status = "前台保持中"
             self.onEvent?("延长运行已开始（selfCare）。熄屏、变暗、返回菜单不结束会话")
         }
@@ -78,7 +117,8 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
         error: Error?
     ) {
         Task { @MainActor in
-            self.sessionDidInvalidate(extendedRuntimeSession, reason, detail: error?.localizedDescription)
+            let detail = (error as NSError?).map { "domain=\($0.domain) code=\($0.code) \($0.localizedDescription)" }
+            self.sessionDidInvalidate(extendedRuntimeSession, reason, detail: detail)
         }
     }
 
@@ -87,7 +127,10 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
         _ reason: WKExtendedRuntimeSessionInvalidationReason,
         detail: String?
     ) {
-        guard session === extendedRuntimeSession || session == nil else { return }
+        guard session === extendedRuntimeSession || session == nil else {
+            onEvent?("忽略已替换会话的失效 reason=\(Self.rawName(reason)) rawValue=\(reason.rawValue)")
+            return
+        }
         running = false
         if session === extendedRuntimeSession {
             session = nil
@@ -105,7 +148,7 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
                 onEvent?("系统结束了延长运行（\(Self.name(reason))\(detail.map { "：\($0)" } ?? "")）。熄屏、变暗、返回菜单不会因此调用 invalidate")
             }
         case .expired, .suppressedBySystem, .error:
-            onEvent?("延长运行失效 reason=\(Self.rawName(reason)) rawValue=\(reason.rawValue) detail=\(detail ?? "nil")")
+            onEvent?("延长运行失效 reason=\(Self.rawName(reason)) rawValue=\(reason.rawValue) \(Self.errorText(detail))")
             if !userEnded {
                 status = "前台保持中"
                 Task { @MainActor in
@@ -116,6 +159,20 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
         @unknown default:
             break
         }
+    }
+
+    private static func stateName(_ state: WKExtendedRuntimeSessionState) -> String {
+        switch state {
+        case .notStarted: return "notStarted"
+        case .scheduled: return "scheduled"
+        case .running: return "running"
+        case .invalid: return "invalid"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func errorText(_ detail: String?) -> String {
+        detail.map { "detail=\($0)" } ?? "detail=nil"
     }
 
     private static func rawName(_ reason: WKExtendedRuntimeSessionInvalidationReason) -> String {
