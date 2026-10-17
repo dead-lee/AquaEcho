@@ -9,19 +9,17 @@ enum PacketLayout {
         Int((hz / 50).rounded())
     }
 
-    /// 64 bit，从高位到低位：低频 10、高频 10、序号 3、随机 33、扩展汉明校验 8。没有前导。
+    /// 64 bit 全是载荷，从高位到低位：低频 10、高频 10、序号 3、随机 41。没有校验位。
     static func encode(lowHz: Double, highHz: Double, sequence: Int, random: UInt64? = nil) -> Data {
         let low = UInt64(frequencyCode(lowHz) & 0x3FF)
         let high = UInt64(frequencyCode(highHz) & 0x3FF)
         let seq = UInt64(sequence & 0x7)
-        let noise = (random ?? randomBits()) & ((UInt64(1) << 33) - 1)
+        let noise = (random ?? randomBits()) & ((UInt64(1) << 41) - 1)
         var word: UInt64 = 0
         word |= low << 54
         word |= high << 44
         word |= seq << 41
-        word |= noise << 8
-        let sum = ExtendedHamming.checksum(data56: word >> 8)
-        word |= UInt64(sum)
+        word |= noise
         return data(from: word)
     }
 
@@ -53,10 +51,9 @@ enum PacketLayout {
         var payload: Data
     }
 
-    /// 先纠正最多 1 bit，再按位序读出低频、高频和序号。
+    /// 按位序读出低频、高频和序号。纠错发生在卷积译码，不在这 64 bit 里面。
     static func decode(_ data: Data) -> Fields {
-        let corrected = ExtendedHamming.correct(word: word(from: data))
-        let word = corrected.word
+        let word = word(from: data)
         let lowCode = Int((word >> 54) & 0x3FF)
         let highCode = Int((word >> 44) & 0x3FF)
         let sequence = Int((word >> 41) & 0x7)
@@ -64,7 +61,7 @@ enum PacketLayout {
             lowHz: Double(lowCode * 50),
             highHz: Double(highCode * 50),
             sequence: sequence,
-            corrected: corrected.corrected,
+            corrected: false,
             payload: PacketLayout.data(from: word)
         )
     }
@@ -93,7 +90,7 @@ enum PacketLayout {
     }
 
     private static func randomBits() -> UInt64 {
-        var bytes = [UInt8](repeating: 0, count: 5)
+        var bytes = [UInt8](repeating: 0, count: 6)
         let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         if status != errSecSuccess {
             var rng = SystemRandomNumberGenerator()

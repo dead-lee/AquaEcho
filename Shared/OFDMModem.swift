@@ -1,8 +1,8 @@
 import Accelerate
 import Foundation
 
-/// watercomms 的数据通路：Naiser 前导对齐，差分 BPSK-OFDM，循环前缀，频域均衡。
-/// 载荷 bit 的排列不变。0 映射到子载波实部 +1，1 映射到 −1。
+/// watercomms 的默认数据通路：1000–4000 Hz，naiser3 前导，差分 BPSK-OFDM，循环前缀，频域均衡。
+/// 0 映射到子载波实部 +1，1 映射到 −1。卷积编码由调用方完成。
 enum OFDMModem {
     static let playbackAmplitude: Float = 0.98
     /// Naiser.java 的 PN、Nu、N0。8 段有用信号之间和末尾各留 N0 点静音。
@@ -63,7 +63,7 @@ enum OFDMModem {
         let symbolSamples = cp + ns
         let lowHz = min(f0, f1)
         let highHz = max(f0, f1)
-        let preamble = naiserPreamble(f0: lowHz, f1: highHz, sampleRate: rate)
+        let preamble = NaiserWaveform.samples
         let packetSamples = preamble.count + gap + (1 + dataCounts.count) * symbolSamples
         return Plan(
             sampleRate: rate,
@@ -84,7 +84,7 @@ enum OFDMModem {
     }
 
     static func signalSeconds(f0: Double, f1: Double, config: TestConfig) -> Double {
-        let plan = plan(f0: f0, f1: f1, config: config, bitCount: PacketLayout.bitCount)
+        let plan = plan(f0: f0, f1: f1, config: config, bitCount: ConvolutionalCode.encodedBitCount)
         return Double(plan.packetSamples) / config.normalized.sampleRate
     }
 
@@ -254,31 +254,6 @@ enum OFDMModem {
         return output
     }
 
-    /// 带内等幅余弦重复 8 段，符号按 Naiser 的 PN，段间和末尾是 N0 点静音。
-    private static func naiserPreamble(f0: Double, f1: Double, sampleRate: Double) -> [Float] {
-        let spacing = sampleRate / Double(naiserNu)
-        var lowBin = Int((f0 / spacing).rounded())
-        var highBin = Int((f1 / spacing).rounded()) - 1
-        let nyquist = naiserNu / 2 - 1
-        lowBin = min(max(lowBin, 1), nyquist)
-        highBin = min(max(highBin, lowBin), nyquist)
-        let carriers = Array(lowBin...highBin)
-        let base = synthesize(
-            bits: Array(repeating: false, count: carriers.count),
-            carriers: carriers,
-            ns: naiserNu
-        )
-        var output: [Float] = []
-        output.reserveCapacity(naiserPN.count * (naiserNu + naiserN0))
-        for sign in naiserPN {
-            for sample in base {
-                output.append(sign * sample)
-            }
-            output.append(contentsOf: repeatElement(0, count: naiserN0))
-        }
-        return output
-    }
-
     /// find_symbol.m：96 阶 Hamming 带通，低频比频带低 200 Hz，高频停在频带上沿。补偿群延迟后，下标与输入对齐。
     static func bandpass(_ samples: [Float], lowHz: Double, highHz: Double, sampleRate: Double) -> [Float] {
         guard samples.count > filterOrder, sampleRate > 0 else { return samples }
@@ -320,44 +295,72 @@ enum OFDMModem {
     static func correlate(signal: [Float], template: [Float]) -> [Float] {
         let count = signal.count - template.count + 1
         guard count > 0, !template.isEmpty else { return [] }
-        let size = 1 << Int(ceil(log2(Double(signal.count + template.count - 1))))
-        let log2n = vDSP_Length(log2(Double(size)))
-        guard let fft = vDSP.FFT(log2n: log2n, radix: .radix2, ofType: DSPSplitComplex.self) else { return [] }
-        var signalReal = signal + [Float](repeating: 0, count: size - signal.count)
-        var signalImag = [Float](repeating: 0, count: size)
-        var templateReal = template + [Float](repeating: 0, count: size - template.count)
-        var templateImag = [Float](repeating: 0, count: size)
-        signalReal.withUnsafeMutableBufferPointer { signalRealPointer in
-            signalImag.withUnsafeMutableBufferPointer { signalImagPointer in
-                templateReal.withUnsafeMutableBufferPointer { templateRealPointer in
-                    templateImag.withUnsafeMutableBufferPointer { templateImagPointer in
-                        guard let signalRealBase = signalRealPointer.baseAddress,
-                              let signalImagBase = signalImagPointer.baseAddress,
-                              let templateRealBase = templateRealPointer.baseAddress,
-                              let templateImagBase = templateImagPointer.baseAddress else { return }
-                        var signalSplit = DSPSplitComplex(realp: signalRealBase, imagp: signalImagBase)
-                        var templateSplit = DSPSplitComplex(realp: templateRealBase, imagp: templateImagBase)
-                        fft.forward(input: signalSplit, output: &signalSplit)
-                        fft.forward(input: templateSplit, output: &templateSplit)
-                        for index in 0..<size {
-                            let real = signalRealPointer[index]
-                            let imag = signalImagPointer[index]
-                            let kernelReal = templateRealPointer[index]
-                            let kernelImag = templateImagPointer[index]
-                            signalRealPointer[index] = real * kernelReal + imag * kernelImag
-                            signalImagPointer[index] = imag * kernelReal - real * kernelImag
+        var size = 1
+        var power = 0
+        let needed = signal.count + template.count - 1
+        while size < needed {
+            size <<= 1
+            power += 1
+            if power > 20 { return [] }
+        }
+        let log2n = vDSP_Length(power)
+        guard let setup = fftSetup(log2n: log2n) else { return [] }
+        var signalInReal = signal + [Float](repeating: 0, count: size - signal.count)
+        var signalInImag = [Float](repeating: 0, count: size)
+        var templateInReal = template + [Float](repeating: 0, count: size - template.count)
+        var templateInImag = [Float](repeating: 0, count: size)
+        var signalOutReal = [Float](repeating: 0, count: size)
+        var signalOutImag = [Float](repeating: 0, count: size)
+        var templateOutReal = [Float](repeating: 0, count: size)
+        var templateOutImag = [Float](repeating: 0, count: size)
+
+        func transform(_ direction: FFTDirection, _ inReal: inout [Float], _ inImag: inout [Float], _ outReal: inout [Float], _ outImag: inout [Float]) {
+            inReal.withUnsafeMutableBufferPointer { inRealPointer in
+                inImag.withUnsafeMutableBufferPointer { inImagPointer in
+                    outReal.withUnsafeMutableBufferPointer { outRealPointer in
+                        outImag.withUnsafeMutableBufferPointer { outImagPointer in
+                            guard let inRealBase = inRealPointer.baseAddress,
+                                  let inImagBase = inImagPointer.baseAddress,
+                                  let outRealBase = outRealPointer.baseAddress,
+                                  let outImagBase = outImagPointer.baseAddress else { return }
+                            var input = DSPSplitComplex(realp: inRealBase, imagp: inImagBase)
+                            var output = DSPSplitComplex(realp: outRealBase, imagp: outImagBase)
+                            vDSP_fft_zop(setup, &input, 1, &output, 1, log2n, direction)
                         }
-                        fft.inverse(input: signalSplit, output: &signalSplit)
                     }
                 }
             }
         }
-        return Array(signalReal.prefix(count))
+
+        transform(FFTDirection(kFFTDirection_Forward), &signalInReal, &signalInImag, &signalOutReal, &signalOutImag)
+        transform(FFTDirection(kFFTDirection_Forward), &templateInReal, &templateInImag, &templateOutReal, &templateOutImag)
+        for index in 0..<size {
+            let real = signalOutReal[index]
+            let imag = signalOutImag[index]
+            let kernelReal = templateOutReal[index]
+            let kernelImag = templateOutImag[index]
+            signalInReal[index] = real * kernelReal + imag * kernelImag
+            signalInImag[index] = imag * kernelReal - real * kernelImag
+        }
+        transform(FFTDirection(kFFTDirection_Inverse), &signalInReal, &signalInImag, &signalOutReal, &signalOutImag)
+        return Array(signalOutReal.prefix(count))
+    }
+
+    private static let fftLock = NSLock()
+    private static var fftSetups: [vDSP_Length: FFTSetup] = [:]
+
+    /// Swift 的 `vDSP.FFT` 实际只变换 2^(log2n-1) 点，超过 65536 的延迟会变成 0。这里直接用 C 接口。
+    private static func fftSetup(log2n: vDSP_Length) -> FFTSetup? {
+        fftLock.lock()
+        defer { fftLock.unlock() }
+        if let setup = fftSetups[log2n] { return setup }
+        guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else { return nil }
+        fftSetups[log2n] = setup
+        return setup
     }
 
     /// Naiser_check_valid：在相关峰前后 1200 点、步长 8 上算差分相关。
-    /// 得分达到 0.6 后，起点取仍保持在峰值附近的最后一个下标。
-    /// 对 watercomms 的 naiser 波形，这段平台的后沿就是前导起点；85% 中点会落在起点之前约一个保护间隔。
+    /// 得分达到 0.6 才算通过。返回的 start 是得分平台的后沿，供核对；接收端对齐用相关峰。
     static func naiserLock(samples: [Float], peakIndex: Int) -> (start: Int, score: Double)? {
         let preambleLength = naiserPN.count * (naiserNu + naiserN0)
         let from = max(0, peakIndex - naiserWindow)

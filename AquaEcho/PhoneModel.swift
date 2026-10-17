@@ -19,6 +19,7 @@ final class PhoneModel: ObservableObject {
 
     private let capture = AudioCapture()
     private let link = PhoneLink()
+    private let demodQueue = DispatchQueue(label: "aquaecho.demod")
     private let recordingLock = NSLock()
     private var recordingSamples: [Float] = []
     private var recordingRate = 48_000.0
@@ -121,8 +122,11 @@ final class PhoneModel: ObservableObject {
         recordingRate = config.sampleRate
         recordingLock.unlock()
         capture.onSamples = { [weak self] samples, date, rate in
-            self?.keepRecording(samples, sampleRate: rate)
-            live.ingest(samples, at: date, sampleRate: rate)
+            guard let self else { return }
+            self.keepRecording(samples, sampleRate: rate)
+            self.demodQueue.async {
+                live.ingest(samples, at: date, sampleRate: rate)
+            }
         }
         isRunning = true
         runID = UUID()
@@ -131,7 +135,9 @@ final class PhoneModel: ObservableObject {
         log("开始录音，等待 \(expectedCount) 个包")
         let started = link.send(WCEnvelope(kind: .start, config: config, packet: nil, packets: nil, progress: nil))
         if !started {
+            capture.onSamples = nil
             capture.stop()
+            demodQueue.sync {}
             isRunning = false
             UIApplication.shared.isIdleTimerDisabled = false
             lastError = "Watch 不可达。请先打开手表上的 AquaEcho，并保持 App 在前台。"
@@ -207,6 +213,7 @@ final class PhoneModel: ObservableObject {
         isRunning = false
         capture.onSamples = nil
         capture.stop()
+        demodQueue.sync {}
         UIApplication.shared.isIdleTimerDisabled = false
         writeRecording()
         let scored = receiver?.finish() ?? []

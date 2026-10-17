@@ -1,6 +1,6 @@
 import Foundation
 
-/// 在麦克风回调的滑动窗口里用 Naiser 前导找到 OFDM 包，解出 64 bit 后校验，不保留整段会话。
+/// 在滑动窗口里用 Naiser 前导找到 OFDM 包，卷积译码还原 64 bit 载荷。
 enum SignalAnalyzer {
     final class Receiver {
         struct Update {
@@ -147,18 +147,19 @@ enum SignalAnalyzer {
                 var accepted = false
                 var rejectedLocal = localStart
                 for candidate in candidates {
-                    guard let lock = OFDMModem.naiserLock(samples: audio, peakIndex: candidate) else {
+                    guard OFDMModem.naiserLock(samples: audio, peakIndex: candidate) != nil else {
                         rejectedLocal = max(rejectedLocal, candidate + 2_400)
                         continue
                     }
-                    let symbolStart = lock.start + plan.preamble.count + plan.gap
+                    // evalSegv2 只用 Naiser 当门限，符号起点用相关峰本身。
+                    let symbolStart = candidate + plan.preamble.count + plan.gap
                     let packetEndLocal = symbolStart + symbolCount * plan.symbolSamples
                     if packetEndLocal > audio.count {
                         consume(upToLocal: candidate, plan: plan, pair: pair)
                         return
                     }
                     if let demod = OFDMModem.demodulate(window: audio, symbolStart: symbolStart, plan: plan) {
-                        accept(demod, preambleAbsolute: emitted + lock.start)
+                        accept(demod, preambleAbsolute: emitted + candidate)
                         let packetEnd = emitted + symbolStart + symbolCount * plan.symbolSamples
                         noteSkipped(from: searchFrom, to: packetEnd)
                         searchFrom = packetEnd
@@ -283,7 +284,7 @@ enum SignalAnalyzer {
         }
 
         private func accept(_ demod: OFDMModem.Demodulated, preambleAbsolute: Int) {
-            guard demod.bits.count == PacketLayout.bitCount else { return }
+            guard demod.bits.count == ConvolutionalCode.encodedBitCount else { return }
             firstBitDate = callbackDate(absoluteSample: preambleAbsolute)
             firstBitWall = Date()
             frameReadings = demod.readings.map { WindowReading(snrDB: $0.snrDB, ratioDB: $0.ratioDB) }
@@ -297,7 +298,7 @@ enum SignalAnalyzer {
                     f0: low,
                     f1: high,
                     config: config,
-                    bitCount: PacketLayout.bitCount
+                    bitCount: ConvolutionalCode.encodedBitCount
                 )
                 cachedLow = low
                 cachedHigh = high
@@ -308,24 +309,33 @@ enum SignalAnalyzer {
         private func finalizeFrame() {
             let demodEndDate = Date()
             let demodMilliseconds = max(0, Int((demodEndDate.timeIntervalSince(firstBitWall ?? demodEndDate) * 1_000).rounded()))
+            let decoded = ConvolutionalCode.decode(bits)
+            guard decoded.count == PacketLayout.bitCount else {
+                bits = []
+                frameReadings = []
+                firstBitDate = nil
+                firstBitWall = nil
+                return
+            }
+            let recoded = ConvolutionalCode.encode(decoded)
+            let corrected = zip(bits, recoded).contains { $0 != $1 }
             var word: UInt64 = 0
-            for bit in bits {
+            for bit in decoded {
                 word = (word << 1) | (bit ? 1 : 0)
             }
-            let fixed = ExtendedHamming.correct(word: word)
-            let lowCode = Int((fixed.word >> 54) & 0x3FF)
-            let highCode = Int((fixed.word >> 44) & 0x3FF)
-            let sequence = Int((fixed.word >> 41) & 0x7)
+            let lowCode = Int((word >> 54) & 0x3FF)
+            let highCode = Int((word >> 44) & 0x3FF)
+            let sequence = Int((word >> 41) & 0x7)
             let lowHz = Double(lowCode * 50)
             let highHz = Double(highCode * 50)
-            let payload = PacketLayout.data(from: fixed.word)
-            let checksumPassed = fixed.status != .uncorrectable
+            let payload = PacketLayout.data(from: word)
             let listening = currentPair()
             let frequencyMatched = listening.map { pair in
                 PacketLayout.frequencyCode(lowHz) == PacketLayout.frequencyCode(pair.0)
                     && PacketLayout.frequencyCode(highHz) == PacketLayout.frequencyCode(pair.1)
             } ?? false
-            let success = checksumPassed && frequencyMatched
+            let checksumPassed = frequencyMatched
+            let success = frequencyMatched
             let fit = SignalAnalyzer.combine(frameReadings)
             let receiveDate = firstBitDate ?? chunkDate
             bits = []
@@ -351,7 +361,7 @@ enum SignalAnalyzer {
                 decodedLowHz: lowHz,
                 decodedHighHz: highHz,
                 decodedSequence: sequence,
-                corrected: fixed.corrected
+                corrected: corrected
             )
             var matched: SentPacket?
             let matchText: String
@@ -377,7 +387,7 @@ enum SignalAnalyzer {
                 lowHz: lowHz,
                 highHz: highHz,
                 sequence: sequence,
-                corrected: fixed.corrected,
+                corrected: corrected,
                 checksumPassed: checksumPassed,
                 hex: PacketFactory.hex(payload),
                 milliseconds: demodMilliseconds,

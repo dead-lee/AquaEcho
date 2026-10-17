@@ -52,15 +52,8 @@ expectEqual(total.total, 100, "breakdown total")
 
 var sweep = TestConfig()
 let pairs = sweep.plannedPairs()
-expect(pairs.count >= 8, "default sweep should cover 15–20 kHz, got \(pairs.count)")
-for pair in pairs {
-    expect(pair.highHz - pair.lowHz >= 999, "separation \(pair.label)")
-    expect(pair.lowHz >= 15_000 - 0.1 && pair.highHz <= 20_000 + 0.1, "range \(pair.label)")
-}
-for index in 1..<pairs.count {
-    let step = pairs[index].lowHz - pairs[index - 1].lowHz
-    expect(abs(step - 500) < 0.1, "step \(step)")
-}
+expectEqual(pairs.count, 1, "one watercomms band, got \(pairs.count)")
+expect(abs(pairs[0].lowHz - 1_000) < 0.1 && abs(pairs[0].highHz - 4_000) < 0.1, "band \(pairs[0].label)")
 
 // MARK: - OFDM 参数和整包时长
 
@@ -69,7 +62,7 @@ let fresh = TestConfig()
 expectEqual(fresh.symbolDurationMs, 20, "symbol default")
 expectEqual(fresh.cyclicPrefixMs, 1.4, "cyclic prefix default")
 expectEqual(fresh.chirpDurationMs, 100, "chirp default")
-expectEqual(fresh.silenceDurationMs, 15, "gap default")
+expectEqual(fresh.silenceDurationMs, 20, "gap default")
 expectEqual(fresh.leadSilenceMs, 20, "lead default")
 expectEqual(fresh.trailSilenceMs, 20, "trail default")
 let packetMs = fresh.normalized.expectedSignalSeconds * 1_000 + fresh.leadSilenceMs + fresh.trailSilenceMs
@@ -81,50 +74,70 @@ expect(
         > OFDMModem.signalSeconds(f0: 16_000, f1: 17_000, config: fresh),
     "symbol duration changes the packet"
 )
-let probePayload = PacketLayout.encode(lowHz: 16_000, highHz: 17_000, sequence: 0, random: 1)
+let probePayload = PacketLayout.encode(lowHz: 1_000, highHz: 4_000, sequence: 0, random: 1)
+let probeBits = PacketLayout.bits(for: probePayload)
+let probeCoded = ConvolutionalCode.encode(probeBits)
+expectEqual(probeCoded.count, ConvolutionalCode.encodedBitCount, "coded length")
+expectEqual(ConvolutionalCode.decode(probeCoded), probeBits, "viterbi round trip")
+var damagedCode = probeCoded
+damagedCode[40].toggle()
+expectEqual(ConvolutionalCode.decode(damagedCode), probeBits, "viterbi corrects one coded bit")
 let rendered = OFDMModem.playback(
-    bits: PacketLayout.bits(for: probePayload),
-    f0: 16_000,
-    f1: 17_000,
+    bits: probeCoded,
+    f0: 1_000,
+    f1: 4_000,
     config: fresh
 )
-let probePlan = OFDMModem.plan(f0: 16_000, f1: 17_000, config: fresh, bitCount: 64)
+let probePlan = OFDMModem.plan(f0: 1_000, f1: 4_000, config: fresh, bitCount: probeCoded.count)
 let leadSamples = Int((fresh.leadSilenceMs / 1_000 * rate).rounded())
 let trailSamples = Int((fresh.trailSilenceMs / 1_000 * rate).rounded())
 expectEqual(rendered.count, leadSamples + probePlan.packetSamples + trailSamples, "packet length")
-expectEqual(probePlan.preamble.count, 8 * (960 + 240), "naiser length")
+expectEqual(probePlan.preamble.count, 9_360, "naiser3 length")
+expectEqual(probePlan.gap, 960, "chirp gap")
+var late = [Float](repeating: 0, count: 80_000)
+let lateAt = 70_000
+for (offset, sample) in probePlan.preamble.enumerated() {
+    late[lateAt + offset] = sample
+}
+let lateCorrelation = OFDMModem.correlate(signal: late, template: probePlan.preamble)
+if let peak = lateCorrelation.indices.max(by: { lateCorrelation[$0] < lateCorrelation[$1] }) {
+    expect(abs(peak - lateAt) <= 2, "late preamble correlation peak \(peak)")
+} else {
+    expect(false, "late preamble correlation")
+}
+expectEqual(probePlan.ns, 960, "symbol length")
+expectEqual(probePlan.cp, 67, "cyclic prefix")
 let preamble = rendered[leadSamples..<(leadSamples + probePlan.preamble.count)]
 let preamblePeak = preamble.map { abs($0) }.max() ?? 0
 expect(abs(Double(preamblePeak) - 0.98) < 0.02, "preamble peak \(preamblePeak)")
-let earlyPeak = preamble.prefix(Int(0.002 * rate)).map { abs($0) }.max() ?? 0
-expect(earlyPeak > 0.9, "preamble starts at full amplitude, early peak \(earlyPeak)")
 let guardPeak = preamble.dropFirst(960).prefix(240).map { abs($0) }.max() ?? 1
-expect(guardPeak == 0, "naiser guard is silence")
-if let locked = OFDMModem.naiserLock(samples: Array(preamble), peakIndex: 0) {
+expect(guardPeak < 0.001, "naiser guard is silence, peak \(guardPeak)")
+var preambleWithGap = Array(preamble)
+preambleWithGap.append(contentsOf: repeatElement(0, count: probePlan.gap))
+if let locked = OFDMModem.naiserLock(samples: preambleWithGap, peakIndex: 0) {
     expect(locked.score >= 0.95, "naiser metric \(locked.score)")
-    expect(locked.start < 16, "naiser start \(locked.start)")
 } else {
     expect(false, "naiser lock on the preamble")
 }
 if let roundTrip = OFDMModem.demodulate(window: Array(rendered), symbolStart: leadSamples + probePlan.preamble.count + probePlan.gap, plan: probePlan) {
-    expectEqual(roundTrip.bits, PacketLayout.bits(for: probePayload), "ofdm round trip")
+    expectEqual(ConvolutionalCode.decode(roundTrip.bits), probeBits, "ofdm round trip")
 } else {
     expect(false, "ofdm round trip produced no bits")
 }
 var dirty = rendered
 for index in dirty.indices {
-    dirty[index] += 0.8 * sin(2 * Float.pi * 1_000 * Float(index) / Float(rate))
+    dirty[index] += 0.8 * sin(2 * Float.pi * 8_000 * Float(index) / Float(rate))
 }
 let noisyReceiver = SignalAnalyzer.Receiver(
     config: fresh,
-    schedule: [PlannedPair(lowHz: 16_000, highHz: 17_000)]
+    schedule: [PlannedPair(lowHz: 1_000, highHz: 4_000)]
 )
 feed(noisyReceiver, audio: dirty, rate: rate, started: Date(timeIntervalSince1970: 1_700_000_000))
 noisyReceiver.note(SentPacket(
     sequence: 1,
     repeatIndex: 0,
-    lowHz: 16_000,
-    highHz: 17_000,
+    lowHz: 1_000,
+    highHz: 4_000,
     payloadHex: PacketFactory.hex(probePayload),
     watchSendTimestamp: 1_700_000_000
 ))
@@ -170,8 +183,8 @@ config.trailSilenceMs = 20
 config.symbolDurationMs = 20
 config.cyclicPrefixMs = 1.4
 let testPairs = [
-    PlannedPair(lowHz: 16_000, highHz: 17_000),
-    PlannedPair(lowHz: 17_500, highHz: 18_500)
+    PlannedPair(lowHz: 1_000, highHz: 2_500),
+    PlannedPair(lowHz: 2_500, highHz: 4_000)
 ]
 var audio: [Float] = []
 var noise = Noise()
@@ -184,7 +197,7 @@ for pair in testPairs {
         sequence += 1
         let payload = PacketLayout.encode(lowHz: pair.lowHz, highHz: pair.highHz, sequence: repeatIndex, random: UInt64(sequence))
         let buffer = OFDMModem.playback(
-            bits: PacketLayout.bits(for: payload),
+            bits: ConvolutionalCode.encode(PacketLayout.bits(for: payload)),
             f0: pair.lowHz,
             f1: pair.highHz,
             config: config
@@ -213,13 +226,13 @@ let sampleFields = PacketLayout.decode(samplePacket)
 expect(sampleFields.lowHz == 16_000, "decoded low")
 expect(sampleFields.highHz == 17_000, "decoded high")
 expectEqual(sampleFields.sequence, 2, "decoded sequence")
-expect(!sampleFields.corrected, "clean packet is not corrected")
-let flippedWord = PacketLayout.word(from: samplePacket) ^ (UInt64(1) << 20)
-let flipped = ExtendedHamming.correct(word: flippedWord)
+expect(!sampleFields.corrected, "payload itself is not a checksum")
+let data56: UInt64 = 0x0123_4567_89AB_CD
+let hammingWord = (data56 << 8) | UInt64(ExtendedHamming.checksum(data56: data56))
+let flipped = ExtendedHamming.correct(word: hammingWord ^ (UInt64(1) << 20))
 expect(flipped.corrected, "single bit is corrected")
-expectEqual(flipped.word, PacketLayout.word(from: samplePacket), "single bit restores the word")
-let doubleWord = PacketLayout.word(from: samplePacket) ^ (UInt64(1) << 20) ^ (UInt64(1) << 21)
-let doubled = ExtendedHamming.correct(word: doubleWord)
+expectEqual(flipped.word, hammingWord, "single bit restores the word")
+let doubled = ExtendedHamming.correct(word: hammingWord ^ (UInt64(1) << 20) ^ (UInt64(1) << 21))
 expect(doubled.status == .uncorrectable, "two bit errors stay uncorrected")
 
 let started = Date(timeIntervalSince1970: 1_700_000_000)
@@ -324,7 +337,7 @@ expect(silent[0].meanSNRdB < 5, "silence snr \(silent[0].meanSNRdB)")
 expect(silent[0].score.snr == 0, "silence snr points")
 expect(!silent[0].transmissions[0].passed, "silence is not a pass")
 expect(silent[0].score.total < 40, "silence total \(silent[0].score.total)")
-expect(phoneLogs.filter { $0.hasPrefix("解调=") }.count == sent.count, "only full 64-bit frames log demod")
+expect(phoneLogs.filter { $0.hasPrefix("解调=") }.count == sent.count, "only full coded frames log demod")
 let peakLogs = phoneLogs.filter { $0.hasPrefix("检测峰值 SNR=") && $0.contains(" 能量比=") }
 let wholeSeconds = Int(Double(audio.count) / rate)
 expect(peakLogs.count >= wholeSeconds - 1, "one peak log per audio second, got \(peakLogs.count)")

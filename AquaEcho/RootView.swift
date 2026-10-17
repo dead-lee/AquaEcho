@@ -222,7 +222,7 @@ struct ConfigScreen: View {
                     }
                     numberField("前导静音", unit: "ms", value: $model.config.leadSilenceMs)
                     numberField("结尾静音", unit: "ms", value: $model.config.trailSilenceMs)
-                    Text("符号时长是有用符号长度。循环前缀加在每个符号前面。前导是 8 段 Naiser。静音时长是前导和第一个符号之间的间隔。")
+                    Text("符号时长是有用符号长度。循环前缀加在每个符号前面。前导是 watercomms 的 naiser3。静音时长是前导和第一个符号之间的间隔。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -240,8 +240,13 @@ struct ConfigScreen: View {
     }
 
     private func alignFrequencyRange() {
-        model.config.freqMinHz = 15_000
-        model.config.freqMaxHz = 20_000
+        model.config.freqMinHz = 1_000
+        model.config.freqMaxHz = 4_000
+        model.config.stepHz = 3_000
+        model.config.pairSeparationHz = 3_000
+        model.config.symbolDurationMs = 20
+        model.config.cyclicPrefixMs = 1.4
+        model.config.silenceDurationMs = 20
     }
 
     private func numberField(_ title: String, unit: String, value: Binding<Double>) -> some View {

@@ -23,17 +23,17 @@ struct PlannedPair: Codable, Hashable, Identifiable {
 
 struct TestConfig: Codable, Equatable {
     var mode: TestMode = .cpfsk
-    var freqMinHz: Double = 15_000
-    var freqMaxHz: Double = 20_000
-    var stepHz: Double = 500
-    /// 这一对 OFDM 占用的带宽。生成频率对时不会低于 1 kHz。
-    var pairSeparationHz: Double = 1_000
+    var freqMinHz: Double = 1_000
+    var freqMaxHz: Double = 4_000
+    var stepHz: Double = 3_000
+    /// 这一对 OFDM 占用的带宽。watercomms 默认是 1000–4000 Hz 整段。
+    var pairSeparationHz: Double = 3_000
     /// 有用符号长度。20 ms 在 48 kHz 下是 960 点。
     var symbolDurationMs: Double = 20
     /// 旧字段。OFDM 发送不再读取。
     var toneDurationMs: Double = 30
-    /// Naiser 前导和第一个符号之间的间隔。
-    var silenceDurationMs: Double = 15
+    /// 前导结束后的间隔，对应 watercomms 的 ChirpGap，960 点即 20 ms。
+    var silenceDurationMs: Double = 20
     /// 循环前缀。1.4 ms 在 48 kHz 下是 67 点。
     var cyclicPrefixMs: Double = 1.4
     /// 旧字段。Naiser 前导长度固定，发送不再读取。
@@ -50,7 +50,7 @@ struct TestConfig: Codable, Equatable {
         if copy.freqMaxHz < copy.freqMinHz {
             swap(&copy.freqMinHz, &copy.freqMaxHz)
         }
-        copy.stepHz = copy.stepHz.clamped(to: 50...2_000)
+        copy.stepHz = copy.stepHz.clamped(to: 50...4_000)
         copy.pairSeparationHz = max(1_000, copy.pairSeparationHz)
         copy.symbolDurationMs = copy.symbolDurationMs.clamped(to: 10...200)
         copy.toneDurationMs = copy.toneDurationMs.clamped(to: 10...500)
@@ -114,13 +114,13 @@ extension TestConfig {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         mode = try container.decodeIfPresent(TestMode.self, forKey: .mode) ?? .cpfsk
-        freqMinHz = try container.decodeIfPresent(Double.self, forKey: .freqMinHz) ?? 15_000
-        freqMaxHz = try container.decodeIfPresent(Double.self, forKey: .freqMaxHz) ?? 20_000
-        stepHz = try container.decodeIfPresent(Double.self, forKey: .stepHz) ?? 500
-        pairSeparationHz = try container.decodeIfPresent(Double.self, forKey: .pairSeparationHz) ?? 1_000
+        freqMinHz = try container.decodeIfPresent(Double.self, forKey: .freqMinHz) ?? 1_000
+        freqMaxHz = try container.decodeIfPresent(Double.self, forKey: .freqMaxHz) ?? 4_000
+        stepHz = try container.decodeIfPresent(Double.self, forKey: .stepHz) ?? 3_000
+        pairSeparationHz = try container.decodeIfPresent(Double.self, forKey: .pairSeparationHz) ?? 3_000
         symbolDurationMs = try container.decodeIfPresent(Double.self, forKey: .symbolDurationMs) ?? 20
         toneDurationMs = try container.decodeIfPresent(Double.self, forKey: .toneDurationMs) ?? 30
-        silenceDurationMs = try container.decodeIfPresent(Double.self, forKey: .silenceDurationMs) ?? 15
+        silenceDurationMs = try container.decodeIfPresent(Double.self, forKey: .silenceDurationMs) ?? 20
         cyclicPrefixMs = try container.decodeIfPresent(Double.self, forKey: .cyclicPrefixMs) ?? 1.4
         chirpDurationMs = try container.decodeIfPresent(Double.self, forKey: .chirpDurationMs) ?? 100
         repeats = try container.decodeIfPresent(Int.self, forKey: .repeats) ?? 5
@@ -157,13 +157,23 @@ enum ConfigStore {
             return TestConfig()
         }
         var loaded = config.normalized
-        // 上一版内置默认是 50/20/250/350。这四项都还停在旧默认值时改成 30/15/20/20，整包才能在 3 秒内发完。
+        // 上一版内置默认是 50/20/250/350。这四项都还停在旧默认值时改成 30/20/20/20。
         if loaded.toneDurationMs == 50, loaded.silenceDurationMs == 20,
            loaded.leadSilenceMs == 250, loaded.trailSilenceMs == 350 {
             loaded.toneDurationMs = 30
-            loaded.silenceDurationMs = 15
             loaded.leadSilenceMs = 20
             loaded.trailSilenceMs = 20
+            save(loaded)
+        }
+        // 近超声扫描改成 watercomms 的 1–4 kHz、20 ms 符号和 20 ms 间隔。
+        if loaded.freqMinHz >= 10_000 {
+            loaded.freqMinHz = 1_000
+            loaded.freqMaxHz = 4_000
+            loaded.stepHz = 3_000
+            loaded.pairSeparationHz = 3_000
+            loaded.symbolDurationMs = 20
+            loaded.cyclicPrefixMs = 1.4
+            loaded.silenceDurationMs = 20
             save(loaded)
         }
         return loaded
