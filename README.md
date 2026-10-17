@@ -53,7 +53,7 @@ Hit 和 SentPacket 按解出的频率对和序号配对。不再按 `pendingHits
 ## 怎么跑
 
 1. 用 Xcode 打开 `AquaEcho.xcodeproj`，给两个 target 选好你的开发团队。Bundle ID 目前是 `com.deadlee.AquaEcho`。
-2. 真机安装用 `Scripts/install-devices.sh`。脚本卸掉手机上已有的 AquaEcho，再完整安装内嵌了手表包的 iPhone 应用。卸载会清掉手机上的日志、CSV 和录音。增量更新只会换掉手机上的包，手表会停在旧构建；卸掉之后的完整安装才会让手机经配对把手表包推过去。装完后让手表解锁并靠近手机，两边界面的构建号应相同。打开手表上的 AquaEcho 后让它留在前台；应用自己会申请延长运行，熄屏也不会被系统送回表盘。
+2. 真机安装用 `Scripts/install-devices.sh`。脚本先把内嵌了手表包的 iPhone 应用增量装到手机。安装日志显示增量完成、手表包没有推送时，再卸掉手机应用做完整安装；卸载会清掉手机上的日志、CSV 和录音。装完后让手表解锁并靠近手机，两边界面的构建号应相同。打开手表上的 AquaEcho 后让它留在前台；应用会在进入 active 之后申请延长运行，熄屏也不会被系统送回表盘。
 3. 在 iPhone 上设好频率、步进、重复次数，点「同步到 Watch」，再点「开始测试」。
 4. 把手表扬声器靠近 iPhone 底部麦克风。波形峰值归一化到 0.98。程序不修改系统音量。`AVAudioSession` 类别是 `.playback`。`WatchRootView` 用 `.digitalCrownRotation` 调节播放音量，绑定值范围 `0.0...1.0`，步进 `0.05`。初始值是当前 `AVAudioSession.sharedInstance().outputVolume`。旋转表冠时把该值写入 `player.volume` 和 `engine.mainMixerNode.outputVolume`。界面显示这个音量的百分比。低于 0.95 时文字固定为「音量不足，请旋转数码表冠调到最大」，发送仍然继续。开始发送前读取 `AVAudioSession.sharedInstance().outputVolume`，并写入日志「音量 outputVolume=0.xx」。
 
@@ -63,11 +63,11 @@ Hit 和 SentPacket 按解出的频率对和序号配对。不再按 `pendingHits
 
 使用 `WKExtendedRuntimeSession(.selfCare)` 保活，确保熄屏不中断发送。熄屏不结束会话，也不中断正在进行的发送。
 
-本机 watchOS SDK 的构造方法是 `WKExtendedRuntimeSession()`，没有 `sessionType` 参数。sessionType 固定为 self-care：`AquaEchoWatch/Info.plist` 的 `WKBackgroundModes` 只有 `self-care`。不在 `applicationWillResignActive` 或启动过早时创建会话，只在 `applicationDidBecomeActive` 之后创建并 `start()`。日志记录「延长运行已在 applicationDidBecomeActive 后启动」。
+本机 watchOS SDK 的构造方法是 `WKExtendedRuntimeSession()`，没有 `sessionType` 参数。sessionType 固定为 self-care：`AquaEchoWatch/Info.plist` 的 `WKBackgroundModes` 只有 `self-care`。`applicationWillResignActive` 只把允许启动标成否，不创建会话，也不停止发声。`applicationDidBecomeActive` 把允许启动标成是，延迟 0.3 秒，并且场景阶段已经是 active 时才 `start()`。日志记录「延长运行已在 applicationDidBecomeActive 后延迟启动」。
 
 启动成功后，熄屏、屏幕变暗、返回菜单都不调用 `invalidate()`，发送继续。只有用户点击停止按钮，或按数码表冠离开应用（系统原因 `resignedFrontmost`）时，才调用 `invalidate()` 结束会话并停止发声。`resignedFrontmost` 不重建会话。停止原因写「resignedFrontmost rawValue=X」。
 
-`startIfNeeded` 发现当前会话的状态是 `.running`、`.scheduled` 或 `.notStarted` 时直接返回，不再创建新的 `WKExtendedRuntimeSession`。只有会话为 nil，或状态为 `.invalid` 时才新建。新建之前如果旧会话还在，先 `invalidate()` 并置为 nil。系统以 `.error`、`.expired` 或 `.suppressedBySystem` 收回会话，且不是用户主动结束时，只在 0.5 秒后调用 `startIfNeeded` 重建，不调用 `onStopSound`，也不停止发声。这三种失效的日志是「延长运行失效 reason=原始枚举名 rawValue=X detail=错误描述」。失效回调只处理当前这一次会话，避免清掉刚建好的新会话。
+`startIfNeeded` 在允许启动为否时直接返回。当前会话是 `.running`，或 `.scheduled` / `.notStarted` 还不满 1 秒时，不再创建新的 `WKExtendedRuntimeSession`。场景阶段不是 active 时不创建会话。系统以 `.expired` 或 `.suppressedBySystem` 收回会话时，0.5 秒后如果允许启动且场景仍是 active，再调用 `startIfNeeded`。`.error` 且 detail 含 `code=3` 时不重启。按数码表冠离开（`resignedFrontmost`）把允许启动标成否并停止发声。失效回调只处理当前这一次会话，避免清掉刚建好的新会话。
 
 手表界面的根布局是普通 `VStack`，不用 `ScrollView`，也不使用 `.scrollDisabled`。内容超出屏幕时，用 `.contentShape(Rectangle())` 和 `DragGesture` 做只响应手指的滚动。数码表冠只通过 `.digitalCrownRotation` 调节上面的播放音量，不改系统音量。
 

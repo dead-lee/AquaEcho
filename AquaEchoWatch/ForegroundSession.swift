@@ -15,12 +15,18 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
     var onStopSound: ((String) -> Void)?
 
     private var session: WKExtendedRuntimeSession?
-    private var userEnded = false
+    private var allowedToStart = true
+    private var scenePhase: ScenePhase = .inactive
     private var startRequestedAt: Date?
 
+    func setAllowedToStart(_ value: Bool) {
+        allowedToStart = value
+        onEvent?("延长运行允许启动=\(value ? "是" : "否")")
+    }
+
     func startIfNeeded() {
-        guard !userEnded else {
-            onEvent?("延长运行未启动：用户已结束")
+        guard allowedToStart else {
+            onEvent?("延长运行未启动：当前不允许")
             return
         }
         if let session {
@@ -55,11 +61,17 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
     }
 
     private func replaceSession(dropping old: WKExtendedRuntimeSession) {
-        beginSession()
+        guard beginSession() else { return }
         old.invalidate()
     }
 
-    private func beginSession() {
+    /// 只有场景已经是 active 才创建会话并 `start()`。否则不创建。
+    @discardableResult
+    private func beginSession() -> Bool {
+        guard scenePhase == .active else {
+            onEvent?("延长运行延迟：App 非 active")
+            return false
+        }
         let next = WKExtendedRuntimeSession()
         next.delegate = self
         session = next
@@ -67,37 +79,27 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
         next.start()
         status = "正在申请前台"
         onEvent?("已调用 start()，调用后 state=\(Self.stateName(next.state)) rawValue=\(next.state.rawValue)")
+        return true
     }
 
-    /// 上一次若已因停止或表冠离开而结束，下次发送前再开一个 self-care 会话。
+    /// 发送前允许启动，并在当前已经 active 时申请会话。
     func ensureRunning() {
-        userEnded = false
+        setAllowedToStart(true)
         startIfNeeded()
     }
 
     func noteScenePhase(_ phase: ScenePhase) {
-        let name: String
-        switch phase {
-        case .active:
-            name = "active"
-        case .inactive:
-            name = "inactive"
-        case .background:
-            name = "background"
-        @unknown default:
-            name = "unknown"
-        }
+        scenePhase = phase
         let state = session.map { "\(Self.stateName($0.state)) rawValue=\($0.state.rawValue)" } ?? "无会话"
-        onEvent?("场景阶段=\(name) 会话=\(state) 前台保持=\(running ? "是" : "否")")
+        onEvent?("场景阶段=\(Self.phaseName(phase)) 会话=\(state) 前台保持=\(running ? "是" : "否")")
     }
 
     func endBecauseUserStoppedOrLeft() {
-        guard !userEnded else { return }
-        userEnded = true
         running = false
         status = "已结束前台保持"
-        session?.invalidate()
+        let current = session
         session = nil
+        current?.invalidate()
     }
 
     nonisolated func extendedRuntimeSessionDidStart(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
@@ -137,27 +139,44 @@ final class ForegroundSession: NSObject, ObservableObject, WKExtendedRuntimeSess
         }
         switch reason {
         case .resignedFrontmost:
+            setAllowedToStart(false)
             onEvent?("按数码表冠离开应用，invalidate 并停止发声")
             onStopSound?("resignedFrontmost rawValue=\(reason.rawValue)")
-            endBecauseUserStoppedOrLeft()
+            status = "已结束前台保持"
         case .none:
             status = "已结束前台保持"
         case .sessionInProgress:
-            if !userEnded {
-                status = "前台保持中"
-                onEvent?("系统结束了延长运行（\(Self.name(reason))\(detail.map { "：\($0)" } ?? "")）。熄屏、变暗、返回菜单不会因此调用 invalidate")
-            }
+            status = "前台保持中"
+            onEvent?("系统结束了延长运行（\(Self.name(reason))\(detail.map { "：\($0)" } ?? "")）。熄屏、变暗、返回菜单不会因此调用 invalidate")
+        case .error where Self.isNotActiveRejection(detail):
+            onEvent?("延长运行被系统拒绝（非 active） \(Self.errorText(detail))")
         case .expired, .suppressedBySystem, .error:
             onEvent?("延长运行失效 reason=\(Self.rawName(reason)) rawValue=\(reason.rawValue) \(Self.errorText(detail))")
-            if !userEnded {
-                status = "前台保持中"
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    self.startIfNeeded()
+            status = "前台保持中"
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard self.allowedToStart, self.scenePhase == .active else {
+                    self.onEvent?("延长运行未重启：允许启动=\(self.allowedToStart ? "是" : "否") 场景=\(Self.phaseName(self.scenePhase))")
+                    return
                 }
+                self.startIfNeeded()
             }
         @unknown default:
             break
+        }
+    }
+
+    private static func isNotActiveRejection(_ detail: String?) -> Bool {
+        guard let detail else { return false }
+        return detail.range(of: #"code=3(\D|$)"#, options: .regularExpression) != nil
+    }
+
+    private static func phaseName(_ phase: ScenePhase) -> String {
+        switch phase {
+        case .active: return "active"
+        case .inactive: return "inactive"
+        case .background: return "background"
+        @unknown default: return "unknown"
         }
     }
 

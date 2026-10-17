@@ -30,6 +30,9 @@ final class WatchModel: ObservableObject {
             self?.foregroundStatus = self?.foreground.status ?? message
         }
         foreground.onStopSound = { [weak self] reason in
+            if reason.hasPrefix("resignedFrontmost") {
+                self?.foreground.setAllowedToStart(false)
+            }
             self?.stop(reason: reason)
         }
         link.onEnvelope = { [weak self] envelope in
@@ -53,6 +56,7 @@ final class WatchModel: ObservableObject {
         }
         WatchActivation.onWillResignActive = { [weak self] in
             self?.log("applicationWillResignActive 构建 \(AppBuild.number)")
+            self?.foreground.setAllowedToStart(false)
             self?.flushLogs(force: true)
         }
         WatchActivation.onDidEnterBackground = { [weak self] in
@@ -62,10 +66,15 @@ final class WatchModel: ObservableObject {
     }
 
     func startExtendedRuntimeAfterBecomeActive() {
-        log("延长运行已在 applicationDidBecomeActive 后启动 构建 \(AppBuild.number)")
-        foreground.startIfNeeded()
-        foregroundStatus = foreground.status
+        foreground.setAllowedToStart(true)
+        log("延长运行已在 applicationDidBecomeActive 后延迟启动 构建 \(AppBuild.number)")
         flushLogs(force: true)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            self.foreground.startIfNeeded()
+            self.foregroundStatus = self.foreground.status
+            self.flushLogs(force: true)
+        }
     }
 
     func noteScenePhase(_ phase: ScenePhase) {
@@ -75,6 +84,8 @@ final class WatchModel: ObservableObject {
 
     func requestStart() {
         guard !isRunning else { return }
+        foreground.setAllowedToStart(true)
+        foreground.ensureRunning()
         link.send(WCEnvelope(kind: .requestStart, config: config, packet: nil, packets: nil, progress: nil))
         status = reachable ? "已请 iPhone 开始录音" : "iPhone 未连接"
     }
@@ -112,6 +123,8 @@ final class WatchModel: ObservableObject {
                 ConfigStore.save(self.config)
             }
             guard !playing else { return }
+            foreground.setAllowedToStart(true)
+            foreground.ensureRunning()
             Task { await run() }
         case .stop:
             stop(reason: "收到手机停止指令")
@@ -143,7 +156,6 @@ final class WatchModel: ObservableObject {
             if volume < 0.95 {
                 status = "音量不足，请旋转数码表冠调到最大"
             }
-            foreground.ensureRunning()
             log("开始发送 \(config.mode.title)，\(config.plannedPairs().count) 组，重复 \(config.repeats) 次")
             try await Task.sleep(nanoseconds: 400_000_000)
             var sequence = 0

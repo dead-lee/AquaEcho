@@ -1,10 +1,9 @@
 #!/bin/bash
 # 把 AquaEcho 装到已配对的 iPhone，并由手机把内嵌手表包推到手表。
 #
-# devicectl 在手机上已经有这个应用时走增量更新。Mac 上的命令在 iPhone
-# 应用更新完成时就返回，系统不会把 Watch/AquaEchoWatch.app 再推一次，
-# 手表会停在上一版。卸掉手机应用后，LaunchServices 没有安装记录，增量
-# 被跳过，这次完整安装才会经配对推送手表包。
+# 先增量安装。安装日志里如果是一次完成的增量（没有 skip delta），
+# 手表包不会被推送，脚本再卸掉手机应用做完整安装。完整安装会清掉
+# 手机上的日志、CSV 和录音。
 #
 # 只安装 iPhone 包。不要把 AquaEchoWatch.app 装到手表：那条链路是
 # Mac 和手表之间的 localNetwork，没有 Wi-Fi 时会失败。
@@ -22,8 +21,9 @@ usage() {
   cat <<EOF
 用法: Scripts/install-devices.sh [--device <iPhone UDID>] [--derived-data <路径>] [--no-build]
 
-先构建 iOS scheme（内嵌手表包），卸掉已安装的 ${BUNDLE_ID}，再完整安装。
-卸载会清掉手机上的日志、CSV 和录音。装完后让手表解锁并靠近手机，两边界面的构建号才会变成同一版。
+先构建 iOS scheme（内嵌手表包），再增量安装到 iPhone。
+安装日志显示增量完成、手表包没有推送时，卸掉后做完整安装。
+卸载会清掉手机上的日志、CSV 和录音。装完后让手表解锁并靠近手机。
 EOF
 }
 
@@ -102,19 +102,23 @@ PY
 )"
 rm -f "$apps_json"
 
-if [[ -n "$installed_version" ]]; then
-  echo "卸掉手机上的 ${BUNDLE_ID}（构建 ${installed_version}）。日志、CSV 和录音会一起删掉。"
-  xcrun devicectl device uninstall app --device "$DEVICE" "$BUNDLE_ID"
-else
-  echo "手机上还没有 ${BUNDLE_ID}，直接完整安装。"
-fi
+install_log="$(mktemp -t aquaecho-install)"
 
-echo "安装 $APP"
-xcrun devicectl device install app --device "$DEVICE" "$APP"
+install_app() {
+  local started
+  started="$(date '+%Y-%m-%d %H:%M:%S')"
+  xcrun devicectl device install app --device "$DEVICE" "$APP"
+  sleep 1
+  /usr/bin/log show --start "$started" --style compact \
+    --predicate 'subsystem == "com.apple.installcoordination" AND eventMessage CONTAINS "AquaEcho"' \
+    >"$install_log" || true
+}
 
-apps_json="$(mktemp -t aquaecho-apps)"
-xcrun devicectl device info apps --device "$DEVICE" --json-output "$apps_json" --quiet
-reported="$(python3 - "$apps_json" "$BUNDLE_ID" <<'PY'
+phone_reports_version() {
+  local apps_json reported
+  apps_json="$(mktemp -t aquaecho-apps)"
+  xcrun devicectl device info apps --device "$DEVICE" --json-output "$apps_json" --quiet
+  reported="$(python3 - "$apps_json" "$BUNDLE_ID" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
 apps = data.get("result", {}).get("apps", [])
@@ -122,11 +126,43 @@ found = [app for app in apps if app.get("bundleIdentifier") == sys.argv[2]]
 print(found[0].get("bundleVersion", "") if found else "")
 PY
 )"
-rm -f "$apps_json"
-if [[ "$reported" != "$phone_version" ]]; then
-  echo "手机上的构建号是 ${reported:-未安装}，期望 ${phone_version}。" >&2
-  exit 1
+  rm -f "$apps_json"
+  if [[ "$reported" != "$phone_version" ]]; then
+    echo "手机上的构建号是 ${reported:-未安装}，期望 ${phone_version}。" >&2
+    return 1
+  fi
+}
+
+# 增量安装成功时，Mac 日志只有 iPhone 包的 ComputedDelta，没有手表包推送。
+watch_publish_failed() {
+  if grep -q "skip delta" "$install_log"; then
+    echo "安装跳过了增量，手机会经配对推送手表包。"
+    return 1
+  fi
+  if grep -q "Computing delta" "$install_log" && grep -q "kIXRemoteInstallMessageTypeComplete" "$install_log"; then
+    echo "增量安装已完成，安装日志里没有手表包推送。"
+    return 0
+  fi
+  echo "安装日志里看不到增量是否完成，不把这次当成手表发布失败。"
+  return 1
+}
+
+if [[ -n "$installed_version" ]]; then
+  echo "先增量安装到手机（当前构建 ${installed_version}）。"
+  install_app
+  phone_reports_version
+  if watch_publish_failed; then
+    echo "手表发布失败，改为完整安装。日志、CSV 和录音会一起删掉。"
+    xcrun devicectl device uninstall app --device "$DEVICE" "$BUNDLE_ID"
+    install_app
+    phone_reports_version
+  fi
+else
+  echo "手机上还没有 ${BUNDLE_ID}，直接完整安装。"
+  install_app
+  phone_reports_version
 fi
+rm -f "$install_log"
 
 echo "手机已装上构建 ${phone_version}，内嵌手表也是构建 ${phone_version}。"
 echo "让手表解锁并靠近手机，等配对推送完成后再看手表上的构建号。"
