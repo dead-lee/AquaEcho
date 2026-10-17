@@ -22,8 +22,8 @@ usage() {
   cat <<EOF
 用法: Scripts/install-devices.sh [--device <iPhone UDID>] [--derived-data <路径>] [--no-build]
 
-先构建 iOS scheme（内嵌手表包），备份手机 Documents，卸掉已安装的
-${BUNDLE_ID}，再完整安装。装完后让手表解锁并靠近手机，两边界面的构建号才会变成同一版。
+先构建 iOS scheme（内嵌手表包），卸掉已安装的 ${BUNDLE_ID}，再完整安装。
+卸载会清掉手机上的日志、CSV 和录音。装完后让手表解锁并靠近手机，两边界面的构建号才会变成同一版。
 EOF
 }
 
@@ -102,31 +102,8 @@ PY
 )"
 rm -f "$apps_json"
 
-backup_dir=""
 if [[ -n "$installed_version" ]]; then
-  stamp="$(date +%Y%m%d-%H%M%S)"
-  backup_dir="$HOME/Library/Application Support/AquaEcho/install-backups/$stamp"
-  mkdir -p "$backup_dir"
-  echo "备份 Documents 到 ${backup_dir}（当前手机构建 ${installed_version}）。"
-  if ! xcrun devicectl device copy from \
-      --device "$DEVICE" \
-      --domain-type appDataContainer \
-      --domain-identifier "$BUNDLE_ID" \
-      --source Documents \
-      --destination "$backup_dir"; then
-    # 目标必须已存在。Documents 若被写成文件，拷到目录会失败，再落到一个文件路径。
-    if ! xcrun devicectl device copy from \
-        --device "$DEVICE" \
-        --domain-type appDataContainer \
-        --domain-identifier "$BUNDLE_ID" \
-        --source Documents \
-        --destination "$backup_dir/Documents-recovered"; then
-      echo "Documents 没有备份下来，已停止，没有卸载。" >&2
-      exit 1
-    fi
-    echo "手机上的 Documents 是文件。内容已备份，卸载后会恢复成目录。"
-  fi
-  echo "卸掉手机上的 ${BUNDLE_ID}，让下一次安装跳过增量。"
+  echo "卸掉手机上的 ${BUNDLE_ID}（构建 ${installed_version}）。日志、CSV 和录音会一起删掉。"
   xcrun devicectl device uninstall app --device "$DEVICE" "$BUNDLE_ID"
 else
   echo "手机上还没有 ${BUNDLE_ID}，直接完整安装。"
@@ -149,35 +126,6 @@ rm -f "$apps_json"
 if [[ "$reported" != "$phone_version" ]]; then
   echo "手机上的构建号是 ${reported:-未安装}，期望 ${phone_version}。" >&2
   exit 1
-fi
-
-if [[ -n "$backup_dir" ]]; then
-  shopt -s nullglob
-  files=("$backup_dir"/*)
-  shopt -u nullglob
-  if [[ ${#files[@]} -eq 0 ]]; then
-    echo "Documents 是空的，不用拷回。"
-  else
-    restore_failed=0
-    for file in "${files[@]}"; do
-      [[ -f "$file" ]] || continue
-      name="$(basename "$file")"
-      # 必须写到 Documents/文件名。写到 Documents 本身会把目录变成文件。
-      if ! xcrun devicectl device copy to \
-          --device "$DEVICE" \
-          --domain-type appDataContainer \
-          --domain-identifier "$BUNDLE_ID" \
-          --source "$file" \
-          --destination "Documents/${name}"; then
-        restore_failed=1
-      fi
-    done
-    if [[ "$restore_failed" -eq 1 ]]; then
-      echo "新容器还没有 Documents 目录，应用第一次打开时才会创建。备份仍在 ${backup_dir}"
-    else
-      echo "已把 Documents 拷回手机。"
-    fi
-  fi
 fi
 
 echo "手机已装上构建 ${phone_version}，内嵌手表也是构建 ${phone_version}。"
