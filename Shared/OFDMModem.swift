@@ -1,7 +1,8 @@
 import Accelerate
 import Foundation
 
-/// watercomms 的默认数据通路：1000–4000 Hz，naiser3 前导，差分 BPSK-OFDM，循环前缀，频域均衡。
+/// watercomms 的默认数据通路：1000–4000 Hz，naiser3 前导，差分 BPSK-OFDM，循环前缀。
+/// 符号长度 960 点时，差分比特来自 Decoder_offline 的时域均衡（480 抽头，前看 100 点）。
 /// 0 映射到子载波实部 +1，1 映射到 −1。卷积编码由调用方完成。
 enum OFDMModem {
     static let playbackAmplitude: Float = 0.98
@@ -129,6 +130,60 @@ enum OFDMModem {
 
     /// `symbolStart` 是第一个符号（含循环前缀）在 `window` 里的下标。
     static func demodulate(window: [Float], symbolStart: Int, plan: Plan) -> Demodulated? {
+        let frequency = demodulateFrequency(window: window, symbolStart: symbolStart, plan: plan)
+        guard let equalized = demodulateTimeEqualized(window: window, symbolStart: symbolStart, plan: plan) else {
+            return frequency
+        }
+        guard let frequency else { return equalized }
+        // 两条通路都解得出时，留编码比特离卷积码更近的那条。时域均衡只在它更干净时替换频域结果。
+        if codedDisagreement(equalized) < codedDisagreement(frequency) {
+            return equalized
+        }
+        return frequency
+    }
+
+    /// Decoder_offline.m 在 `differential_based_time = 1` 时用这条通路出比特。
+    /// Ns=960 时 tap_num=480、offset=100、岭回归 1e-5。尾巴放不进窗口就交给频域均衡。
+    private static func demodulateTimeEqualized(window: [Float], symbolStart: Int, plan: Plan) -> Demodulated? {
+        guard plan.ns == 960 else { return nil }
+        let tapCount = 480
+        let offset = 100
+        let symbolCount = 1 + plan.dataCounts.count
+        let transmitted = synthesize(bits: plan.trainingBits, carriers: plan.carriers, ns: plan.ns)
+        guard let training = equalizerInput(
+            window: window,
+            bodyStart: symbolStart + plan.cp,
+            sampleCount: plan.ns,
+            taps: tapCount,
+            offset: offset
+        ), let taps = timeEqualizerTaps(transmitted: transmitted, received: training, taps: tapCount) else {
+            return nil
+        }
+        var carriers: [[Bin]] = []
+        carriers.reserveCapacity(symbolCount)
+        var readings: [SymbolReading] = []
+        for index in 0..<symbolCount {
+            let bodyStart = symbolStart + index * plan.symbolSamples + plan.cp
+            guard let received = equalizerInput(
+                window: window,
+                bodyStart: bodyStart,
+                sampleCount: plan.ns,
+                taps: tapCount,
+                offset: offset
+            ), let raw = spectrum(window: window, bodyStart: bodyStart, plan: plan) else {
+                return nil
+            }
+            let body = recover(received: received, taps: taps)
+            guard body.count == plan.ns else { return nil }
+            carriers.append(dft(body[...], bins: plan.carriers))
+            if index > 0 {
+                readings.append(reading(signal: raw.carriers, noise: raw.noise))
+            }
+        }
+        return demodulateCarriers(carriers, readings: readings, plan: plan)
+    }
+
+    private static func demodulateFrequency(window: [Float], symbolStart: Int, plan: Plan) -> Demodulated? {
         let symbolCount = 1 + plan.dataCounts.count
         let end = symbolStart + symbolCount * plan.symbolSamples
         guard symbolStart >= 0, end <= window.count else { return nil }
@@ -136,21 +191,140 @@ enum OFDMModem {
         let weights = zip(plan.trainingBits, training.carriers).map { bit, bin in
             weight(sign: bit ? -1 : 1, bin: bin)
         }
-        var previous = zip(training.carriers, weights).map { multiply($0, $1) }
-        var bits: [Bool] = []
-        bits.reserveCapacity(plan.dataCounts.reduce(0, +))
+        var carriers: [[Bin]] = [zip(training.carriers, weights).map { multiply($0, $1) }]
         var readings: [SymbolReading] = []
-        for (index, count) in plan.dataCounts.enumerated() {
+        for index in 0..<plan.dataCounts.count {
             let start = symbolStart + (index + 1) * plan.symbolSamples
             guard let spectrum = spectrum(window: window, bodyStart: start + plan.cp, plan: plan) else { return nil }
-            let equalized = zip(spectrum.carriers, weights).map { multiply($0, $1) }
-            let symbolBits = zip(equalized, previous).map { isOne($0, previous: $1) }
-            bits.append(contentsOf: deinterleave(symbolBits, symbolIndex: index).prefix(count))
-            previous = equalized
+            carriers.append(zip(spectrum.carriers, weights).map { multiply($0, $1) })
             readings.append(reading(signal: spectrum.carriers, noise: spectrum.noise))
         }
-        guard bits.count == plan.dataCounts.reduce(0, +) else { return nil }
+        return demodulateCarriers(carriers, readings: readings, plan: plan)
+    }
+
+    private static func demodulateCarriers(_ carriers: [[Bin]], readings: [SymbolReading], plan: Plan) -> Demodulated? {
+        guard carriers.count == plan.dataCounts.count + 1 else { return nil }
+        var previous = carriers[0]
+        var bits: [Bool] = []
+        bits.reserveCapacity(plan.dataCounts.reduce(0, +))
+        for (index, count) in plan.dataCounts.enumerated() {
+            let symbolBits = zip(carriers[index + 1], previous).map { isOne($0, previous: $1) }
+            bits.append(contentsOf: deinterleave(symbolBits, symbolIndex: index).prefix(count))
+            previous = carriers[index + 1]
+        }
+        guard bits.count == plan.dataCounts.reduce(0, +), readings.count == plan.dataCounts.count else { return nil }
         return Demodulated(bits: bits, readings: readings)
+    }
+
+    private static func codedDisagreement(_ demodulated: Demodulated) -> Int {
+        let recoded = ConvolutionalCode.encode(ConvolutionalCode.decode(demodulated.bits))
+        return zip(demodulated.bits, recoded).reduce(0) { count, pair in
+            count + (pair.0 == pair.1 ? 0 : 1)
+        }
+    }
+
+    /// Time_equalizer_estimation.m：g = (MᵀM + λI)⁻¹ Mᵀ tx。M 的每一行是接收窗上一段长度为抽头数的样本。
+    private static func timeEqualizerTaps(transmitted: [Float], received: [Float], taps: Int) -> [Double]? {
+        let length = transmitted.count
+        guard taps > 0, taps <= length, received.count == length + taps - 1 else { return nil }
+        var gram = [Double](repeating: 0, count: taps * taps)
+        var rhs = [Double](repeating: 0, count: taps)
+        let receivedValues = received.map(Double.init)
+        let transmittedValues = transmitted.map(Double.init)
+        receivedValues.withUnsafeBufferPointer { receivedBuffer in
+            transmittedValues.withUnsafeBufferPointer { transmittedBuffer in
+                guard let samples = receivedBuffer.baseAddress, let reference = transmittedBuffer.baseAddress else { return }
+                let count = vDSP_Length(length)
+                for column in 0..<taps {
+                    var projection = 0.0
+                    vDSP_dotprD(samples + column, 1, reference, 1, &projection, count)
+                    rhs[column] = projection
+                    for row in 0...column {
+                        var sum = 0.0
+                        vDSP_dotprD(samples + row, 1, samples + column, 1, &sum, count)
+                        gram[column * taps + row] = sum
+                    }
+                }
+            }
+        }
+        let lambda = 1e-5
+        for index in 0..<taps {
+            gram[index * taps + index] += lambda
+        }
+        return solveUpperPositiveDefinite(gram: &gram, rhs: rhs, dimension: taps)
+    }
+
+    /// 解 A x = b。A 是列主序的上三角（含对角），对称正定。
+    private static func solveUpperPositiveDefinite(gram: inout [Double], rhs: [Double], dimension: Int) -> [Double]? {
+        guard gram.count == dimension * dimension, rhs.count == dimension else { return nil }
+        for row in 0..<dimension {
+            for column in row..<dimension {
+                var sum = gram[row + column * dimension]
+                for k in 0..<row {
+                    sum -= gram[k + row * dimension] * gram[k + column * dimension]
+                }
+                if row == column {
+                    guard sum > 0 else { return nil }
+                    gram[row + column * dimension] = sum.squareRoot()
+                } else {
+                    let diagonal = gram[row + row * dimension]
+                    guard diagonal > 0 else { return nil }
+                    gram[row + column * dimension] = sum / diagonal
+                }
+            }
+        }
+        var forward = rhs
+        for row in 0..<dimension {
+            var sum = forward[row]
+            for k in 0..<row {
+                sum -= gram[k + row * dimension] * forward[k]
+            }
+            let diagonal = gram[row + row * dimension]
+            guard diagonal > 0 else { return nil }
+            forward[row] = sum / diagonal
+        }
+        var solution = forward
+        for row in stride(from: dimension - 1, through: 0, by: -1) {
+            var sum = solution[row]
+            for column in (row + 1)..<dimension {
+                sum -= gram[row + column * dimension] * solution[column]
+            }
+            let diagonal = gram[row + row * dimension]
+            guard diagonal > 0 else { return nil }
+            solution[row] = sum / diagonal
+        }
+        return solution
+    }
+
+    private static func recover(received: [Float], taps: [Double]) -> [Float] {
+        let tapCount = taps.count
+        let length = received.count - tapCount + 1
+        guard length > 0 else { return [] }
+        var output = [Float](repeating: 0, count: length)
+        received.withUnsafeBufferPointer { receivedBuffer in
+            guard let samples = receivedBuffer.baseAddress else { return }
+            for index in 0..<length {
+                var sum = 0.0
+                for tap in 0..<tapCount {
+                    sum += Double(samples[index + tap]) * taps[tap]
+                }
+                output[index] = Float(sum)
+            }
+        }
+        return output
+    }
+
+    private static func equalizerInput(
+        window: [Float],
+        bodyStart: Int,
+        sampleCount: Int,
+        taps: Int,
+        offset: Int
+    ) -> [Float]? {
+        let start = bodyStart - offset
+        let count = sampleCount + taps - 1
+        guard start >= 0, count > 0, start + count <= window.count else { return nil }
+        return Array(window[start..<(start + count)])
     }
 
     private struct Bin {
