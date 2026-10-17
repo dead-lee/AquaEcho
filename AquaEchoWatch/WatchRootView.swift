@@ -10,6 +10,9 @@ struct WatchRootView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Text("构建 \(AppBuild.number)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             Text(model.foreground.running ? "前台保持中" : model.foregroundStatus)
                 .font(.caption2)
                 .foregroundStyle(model.foreground.running ? .green : .orange)

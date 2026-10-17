@@ -50,7 +50,7 @@ final class PhoneModel: ObservableObject {
         RunLog.shared.onAppend = { [weak self] _ in
             self?.logText = RunLog.shared.text()
         }
-        log("应用启动。日志 \(RunLog.shared.fileURL.lastPathComponent)")
+        log("应用启动。构建 \(AppBuild.number)。日志 \(RunLog.shared.fileURL.lastPathComponent)")
     }
 
     func reloadLog() {

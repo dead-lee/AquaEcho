@@ -47,7 +47,7 @@ final class WatchModel: ObservableObject {
         refreshOutputVolume()
         playbackVolume = Double(outputVolume)
         applyPlaybackVolume()
-        log("手表端启动")
+        log("手表端启动 构建 \(AppBuild.number)")
         WatchActivation.onDidBecomeActive = { [weak self] in
             self?.startExtendedRuntimeAfterBecomeActive()
         }

@@ -22,6 +22,7 @@ struct TestScreen: View {
         NavigationStack {
             List {
                 Section("连接") {
+                    LabeledContent("构建", value: AppBuild.number)
                     LabeledContent("Watch") {
                         Text(model.reachable ? "已连接" : (model.activated ? "未打开" : "会话未激活"))
                             .foregroundStyle(model.reachable ? .green : .secondary)
