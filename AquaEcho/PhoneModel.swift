@@ -50,7 +50,18 @@ final class PhoneModel: ObservableObject {
         RunLog.shared.onAppend = { [weak self] _ in
             self?.logText = RunLog.shared.text()
         }
-        log("应用启动。构建 \(AppBuild.number)。日志 \(RunLog.shared.fileURL.lastPathComponent)")
+        log("应用启动。构建 \(AppBuild.number)。内嵌手表构建 \(Self.embeddedWatchBuild())。日志 \(RunLog.shared.fileURL.lastPathComponent)")
+    }
+
+    /// 手机包里 `Watch/AquaEchoWatch.app` 的构建号。界面上的手表数字要等配对安装完成后才会变。
+    private static func embeddedWatchBuild() -> String {
+        let plistURL = Bundle.main.bundleURL
+            .appendingPathComponent("Watch/AquaEchoWatch.app/Info.plist")
+        guard let info = NSDictionary(contentsOf: plistURL),
+              let version = info["CFBundleVersion"] as? String else {
+            return "缺失"
+        }
+        return version
     }
 
     func reloadLog() {
