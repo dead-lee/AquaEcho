@@ -154,6 +154,77 @@ let onTarget = Goertzel.power(samples: tone[...], sampleRate: rate, frequency: 1
 let offTarget = Goertzel.power(samples: tone[...], sampleRate: rate, frequency: 17_000)
 expect(onTarget > offTarget * 20, "goertzel should prefer 16 kHz over 17 kHz")
 
+func playbackPacket(_ payload: Data, lowHz: Double, highHz: Double, coded: [Bool]? = nil) -> [Float] {
+    let bits = coded ?? ConvolutionalCode.encode(PacketLayout.bits(for: payload))
+    return OFDMModem.playback(bits: bits, f0: lowHz, f1: highHz, config: fresh)
+}
+
+func flippedCodedBits(_ payload: Data, at indexes: [Int]) -> [Bool] {
+    var bits = ConvolutionalCode.encode(PacketLayout.bits(for: payload))
+    for index in indexes where bits.indices.contains(index) {
+        bits[index].toggle()
+    }
+    return bits
+}
+
+/// 前导和训练符号保留，数据符号换成噪声。对应真机第 4 包：前导还在，后面的符号已经不像发出去的载荷。
+func wipeDataSymbols(_ packet: [Float], lowHz: Double, highHz: Double) -> [Float] {
+    let plan = OFDMModem.plan(
+        f0: lowHz,
+        f1: highHz,
+        config: fresh,
+        bitCount: ConvolutionalCode.encodedBitCount
+    )
+    var copy = packet
+    let lead = Int((fresh.leadSilenceMs / 1_000 * rate).rounded())
+    let dataStart = lead + plan.preamble.count + plan.gap + plan.symbolSamples
+    let dataEnd = min(copy.count, lead + plan.packetSamples)
+    guard dataStart < dataEnd else { return copy }
+    var state: UInt64 = 99
+    for index in dataStart..<dataEnd {
+        state = state &* 6364136223846793005 &+ 1
+        let unit = Float(state >> 40) / Float(1 << 24)
+        copy[index] = (unit - 0.5) * 0.2
+    }
+    return copy
+}
+
+func placePackets(_ items: [(at: Int, samples: [Float])], length: Int) -> [Float] {
+    var audio = [Float](repeating: 0, count: length)
+    for item in items {
+        for (offset, sample) in item.samples.enumerated() {
+            let index = item.at + offset
+            if audio.indices.contains(index) {
+                audio[index] = sample
+            }
+        }
+    }
+    return audio
+}
+
+func receivePackets(
+    _ audio: [Float],
+    schedule: [PlannedPair],
+    packets: [SentPacket],
+    oneShot: Bool = false
+) -> (transmissions: [Transmission], logs: [String]) {
+    let receiver = SignalAnalyzer.Receiver(config: fresh, schedule: schedule)
+    var logs: [String] = []
+    receiver.onLog = { logs.append($0) }
+    for packet in packets {
+        receiver.note(packet)
+    }
+    if oneShot {
+        receiver.ingest(audio, at: started, sampleRate: rate)
+    } else {
+        feed(receiver, audio: audio, rate: rate, started: started)
+    }
+    return (
+        receiver.finish().flatMap(\.transmissions).sorted { $0.packet.sequence < $1.packet.sequence },
+        logs
+    )
+}
+
 func feed(_ receiver: SignalAnalyzer.Receiver, audio: [Float], rate: Double, started: Date) {
     var index = 0
     let chunk = 4_096
@@ -324,6 +395,152 @@ expect(csv.contains("总分"), "total column")
 expect(csv.contains(sent[0].payloadHex), "payload hex")
 let lines = csv.split(separator: "\n")
 expectEqual(lines.count, sent.count + 1, "one header plus one row per packet")
+
+// MARK: - 按真机失败回放：1 bit 可纠正，符号毁掉不能通过，长缓冲后半段和被截掉的尾包
+
+let band = PlannedPair(lowHz: 1_000, highHz: 4_000)
+func fieldPacket(_ sequence: Int, _ repeatIndex: Int, _ random: UInt64) -> (payload: Data, sent: SentPacket) {
+    let payload = PacketLayout.encode(lowHz: band.lowHz, highHz: band.highHz, sequence: repeatIndex, random: random)
+    let sentPacket = SentPacket(
+        sequence: sequence,
+        repeatIndex: repeatIndex,
+        lowHz: band.lowHz,
+        highHz: band.highHz,
+        payloadHex: PacketFactory.hex(payload),
+        watchSendTimestamp: 1_700_000_000 + Double(sequence)
+    )
+    return (payload, sentPacket)
+}
+
+let clean = fieldPacket(1, 0, 0x11)
+let oneBit = fieldPacket(2, 1, 0x22)
+let wiped = fieldPacket(3, 2, 0x33)
+let latePacket = fieldPacket(4, 3, 0x44)
+let tail = fieldPacket(5, 4, 0x55)
+let cleanAudio = playbackPacket(clean.payload, lowHz: band.lowHz, highHz: band.highHz)
+let oneBitAudio = playbackPacket(
+    oneBit.payload,
+    lowHz: band.lowHz,
+    highHz: band.highHz,
+    coded: flippedCodedBits(oneBit.payload, at: [17])
+)
+let wipedAudio = wipeDataSymbols(
+    playbackPacket(wiped.payload, lowHz: band.lowHz, highHz: band.highHz),
+    lowHz: band.lowHz,
+    highHz: band.highHz
+)
+let lateAudio = playbackPacket(latePacket.payload, lowHz: band.lowHz, highHz: band.highHz)
+let tailAudio = playbackPacket(tail.payload, lowHz: band.lowHz, highHz: band.highHz)
+let packetSpan = cleanAudio.count
+expect(packetSpan < Int(0.5 * rate), "packet fits in the 0.5 s watch spacing, span \(packetSpan)")
+
+// 07:23 那次：包大约落在 0.30、0.80、1.30、1.80 秒，第 5 包会落在 2.40 秒；录音在 2.30 秒被截断。
+let origins = [14_400, 38_400, 62_400, 86_400, 115_200]
+let fullLength = origins[4] + packetSpan + 4_096
+let fullAudio = placePackets([
+    (origins[0], cleanAudio),
+    (origins[1], oneBitAudio),
+    (origins[2], wipedAudio),
+    (origins[3], lateAudio),
+    (origins[4], tailAudio)
+], length: fullLength)
+let recordedLength = 110_400
+let truncatedAudio = Array(fullAudio.prefix(recordedLength))
+let fieldPackets = [clean.sent, oneBit.sent, wiped.sent, latePacket.sent, tail.sent]
+let fieldSchedule = Array(repeating: band, count: fieldPackets.count)
+
+let fullRun = receivePackets(fullAudio, schedule: fieldSchedule, packets: fieldPackets)
+let fullResult = fullRun.transmissions
+expectEqual(fullResult.count, 5, "full field recording has 5 packets")
+func field(_ sequence: Int, in result: [Transmission]) -> Transmission? {
+    result.first { $0.packet.sequence == sequence }
+}
+if let first = field(1, in: fullResult) {
+    expect(first.passed, "clean packet passes")
+    expect(!first.errorCorrected, "clean packet does not claim a correction")
+} else {
+    expect(false, "clean packet missing")
+}
+if let second = field(2, in: fullResult) {
+    expect(second.passed, "one coded-bit error still passes")
+    expect(second.errorCorrected, "one coded-bit error is marked corrected")
+} else {
+    expect(false, "one coded-bit packet missing")
+}
+if let third = field(3, in: fullResult) {
+    expect(!third.passed, "wiped data symbols are not a pass")
+} else {
+    expect(false, "wiped packet missing from results")
+}
+expect(fullRun.logs.contains { $0.hasPrefix("解调=失败 ") }, "wiped packet still writes a failed demod line")
+if let fourth = field(4, in: fullResult) {
+    expect(fourth.passed, "packet past 65536 samples still passes")
+} else {
+    expect(false, "late packet missing")
+}
+if let fifth = field(5, in: fullResult) {
+    expect(fifth.passed, "packet after the old 2.3 s cutoff passes when the samples exist")
+} else {
+    expect(false, "tail packet missing from the full recording")
+}
+
+let cutRun = receivePackets(truncatedAudio, schedule: fieldSchedule, packets: fieldPackets)
+let cutResult = cutRun.transmissions
+if let cutTail = field(5, in: cutResult) {
+    expect(!cutTail.passed && cutTail.phoneReceiveDate == nil, "packet past the truncated recording stays missed")
+} else {
+    expect(false, "truncated recording dropped the tail packet from the result")
+}
+if let cutLate = field(4, in: cutResult) {
+    expect(cutLate.passed, "packet inside the truncated recording still passes")
+} else {
+    expect(false, "packet 4 missing from the truncated recording")
+}
+expect(
+    cutResult.allSatisfy { $0.packet.sequence != 5 || !$0.passed },
+    "truncated tail is not reported as passed"
+)
+
+// 一次送进超过 65536 点的整段，前导放在后半段。旧的 FFT 这里会把相关峰变成 0。
+var oneShotAudio = [Float](repeating: 0, count: 96_000)
+for (offset, sample) in lateAudio.enumerated() {
+    oneShotAudio[72_000 + offset] = sample
+}
+let oneShot = receivePackets(
+    oneShotAudio,
+    schedule: [band],
+    packets: [latePacket.sent],
+    oneShot: true
+).transmissions
+expect(oneShot.first?.passed == true, "one-shot buffer finds the preamble past 65536 samples")
+
+// 前导能锁上、数据符号已经坏掉时，不能算通过，也不能把后面同一频率的好包跳过。
+let retryPayload = PacketLayout.encode(lowHz: band.lowHz, highHz: band.highHz, sequence: 1, random: 0x77)
+let retrySent = SentPacket(
+    sequence: 6,
+    repeatIndex: 1,
+    lowHz: band.lowHz,
+    highHz: band.highHz,
+    payloadHex: PacketFactory.hex(retryPayload),
+    watchSendTimestamp: 1_700_000_006
+)
+let advanceAudio = placePackets([
+    (4_096, wipedAudio),
+    (4_096 + packetSpan + 8_000, playbackPacket(retryPayload, lowHz: band.lowHz, highHz: band.highHz))
+], length: 80_000)
+let advanceRun = receivePackets(
+    advanceAudio,
+    schedule: [band, band],
+    packets: [wiped.sent, retrySent]
+)
+let advanceResult = advanceRun.transmissions
+if let retried = advanceResult.first(where: { $0.packet.sequence == 6 }) {
+    expect(retried.passed, "wiped packet does not swallow the next packet on the same frequency")
+} else {
+    expect(false, "next packet missing after a wiped packet")
+}
+expect(advanceResult.first { $0.packet.sequence == 3 }?.passed != true, "wiped packet itself is not a pass")
+expect(advanceRun.logs.contains { $0.hasPrefix("解调=失败 ") }, "wiped packet is demodulated and logged as failed")
 
 // 静音不应得到高分。
 let silentReceiver = SignalAnalyzer.Receiver(
