@@ -149,18 +149,18 @@ final class WatchModel: ObservableObject {
         let config = self.config.normalized
         var sent: [SentPacket] = []
         do {
-            try player.prepare()
-            refreshOutputVolume()
-            let volume = outputVolume
-            log(String(format: "音量 outputVolume=%.2f", locale: Locale(identifier: "en_US_POSIX"), volume))
-            if volume < 0.95 {
-                status = "音量不足，请旋转数码表冠调到最大"
-            }
             let allowed = await requestMicrophone()
             if !allowed {
                 log("没有麦克风权限，无法接收反馈")
                 status = "没有麦克风权限"
             } else {
+                try player.prepare()
+                refreshOutputVolume()
+                let volume = outputVolume
+                log(String(format: "音量 outputVolume=%.2f", locale: Locale(identifier: "en_US_POSIX"), volume))
+                if volume < 0.95 {
+                    status = "音量不足，请旋转数码表冠调到最大"
+                }
                 let band = config.frequency
                 log("开始探测，候选 \(HzFormat.string(band.candidateLowHz)) / \(HzFormat.string(band.candidateHighHz)) Hz，重复 \(config.repeats) 次")
                 try await Task.sleep(nanoseconds: 400_000_000)

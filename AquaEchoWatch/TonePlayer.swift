@@ -37,10 +37,11 @@ final class TonePlayer {
 
     func prepare() throws {
         let session = AVAudioSession.sharedInstance()
+        // longFormAudio 只允许和 playback 一起用，配 playAndRecord 会返回参数错误 -50。
         do {
-            try session.setCategory(.playAndRecord, mode: .measurement, policy: .longFormAudio, options: [])
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [])
         } catch {
-            try session.setCategory(.playAndRecord, mode: .default, policy: .longFormAudio, options: [])
+            try session.setCategory(.playAndRecord, mode: .default, options: [])
         }
         try session.setActive(true)
 
