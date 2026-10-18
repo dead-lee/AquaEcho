@@ -168,22 +168,32 @@ final class WatchModel: ObservableObject {
                 log("开始探测，候选 \(HzFormat.string(band.candidateLowHz)) / \(HzFormat.string(band.candidateHighHz)) Hz，重复 \(config.repeats) 次")
                 try await Task.sleep(nanoseconds: 400_000_000)
                 let probe = FeedbackSignal.soundingSignal(config: config)
-                log("开始发送探测前导，不携带数据 \(probe.samples.count) 样本")
-                let inputRate = try player.beginRecording()
-                let probeDate = try await player.play(samples: probe.samples, leadSamples: probe.leadSamples)
-                log("探测前导播放结束 \(RunLog.timestamp(probeDate))")
-                if !stopRequested {
-                    log("等待反馈")
+                var selectedBand: (fbegin: Double, fend: Double)?
+                while !stopRequested {
+                    try player.prepare()
+                    log("探测 开始播放前导 samples=\(probe.samples.count)")
+                    _ = try await player.play(samples: probe.samples, leadSamples: probe.leadSamples)
+                    log("探测 前导播放结束")
+                    if stopRequested { break }
+                    let inputRate = try player.beginRecording()
+                    log("探测 开始录音等待反馈 上限=\(OFDMConstants.feedbackListenSeconds)s")
                     try await Task.sleep(nanoseconds: UInt64(OFDMConstants.feedbackListenSeconds * 1_000_000_000))
-                }
-                let heard = player.endRecording()
-                if !stopRequested {
+                    let heard = player.endRecording()
+                    if stopRequested { break }
                     if let selected = FeedbackSignal.frequencies(
                         in: heard,
                         sampleRate: inputRate,
                         frequency: config.frequency
                     ) {
-                        log("反馈 fbegin=\(HzFormat.string(selected.fbegin)) fend=\(HzFormat.string(selected.fend))")
+                        log("探测 解析成功 fbegin=\(HzFormat.string(selected.fbegin)) fend=\(HzFormat.string(selected.fend))")
+                        selectedBand = selected
+                        break
+                    }
+                    log("探测 本轮失败 原因=超时或无法解析")
+                    if stopRequested { break }
+                    log("探测 开始下一轮")
+                }
+                if let selected = selectedBand, !stopRequested {
                         let pair = PlannedPair(lowHz: selected.fbegin, highHz: selected.fend)
                         log("当前频率对 \(pair.label)")
                         var sequence = 0
@@ -219,10 +229,6 @@ final class WatchModel: ObservableObject {
                             status = "发送完成"
                             log("发送完成，共 \(sent.count) 包")
                         }
-                    } else {
-                        log("没有解析到反馈")
-                        status = "没有解析到反馈"
-                    }
                 }
             }
         } catch {

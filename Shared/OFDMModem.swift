@@ -18,7 +18,7 @@ enum OFDMConstants {
     static let coarseHopMin = 8
     static let coarseHopSeconds = 0.0005
     static let snrSelectThresholdDb = 6.0
-    static let feedbackListenSeconds = 3.0
+    static let feedbackListenSeconds = 0.5
     static let preambleGapSamples = 960
 }
 
