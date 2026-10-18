@@ -28,7 +28,7 @@ struct TestScreen: View {
                             .foregroundStyle(model.reachable ? .green : .secondary)
                     }
                     LabeledContent("模式", value: model.config.mode.title)
-                    LabeledContent("频率对", value: "\(model.config.plannedPairs().count) 组")
+                    LabeledContent("候选频段", value: "\(HzFormat.string(model.config.frequency.candidateLowHz))–\(HzFormat.string(model.config.frequency.candidateHighHz)) Hz")
                     LabeledContent("预计时长", value: duration(model.config.estimatedTestSeconds))
                 }
                 Section("本次") {
@@ -198,11 +198,11 @@ struct ConfigScreen: View {
                     }
                 }
                 Section("扫描") {
-                    numberField("下限", unit: "Hz", value: $model.config.freqMinHz)
-                    numberField("上限", unit: "Hz", value: $model.config.freqMaxHz)
+                    numberField("下限", unit: "Hz", value: $model.config.frequency.candidateLowHz)
+                    numberField("上限", unit: "Hz", value: $model.config.frequency.candidateHighHz)
                     numberField("步进", unit: "Hz", value: $model.config.stepHz)
                     numberField("频率间隔", unit: "Hz", value: $model.config.pairSeparationHz)
-                    Text("频率间隔是这一对 OFDM 的带宽，至少 1 kHz。扫描从下限开始，每次前进一个步进。")
+                    Text("下限和上限是候选频段。手机在这段里选出 SNR 超过 6 dB 的最长连续区间，手表只在选出的频率上发数据。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -228,7 +228,7 @@ struct ConfigScreen: View {
                         .foregroundStyle(.secondary)
                 }
                 Section {
-                    LabeledContent("将测试", value: "\(model.config.normalized.plannedPairs().count) 组频率")
+                    LabeledContent("候选", value: "\(HzFormat.string(model.config.frequency.candidateLowHz))–\(HzFormat.string(model.config.frequency.candidateHighHz)) Hz")
                     Button("同步到 Watch") { model.syncConfig() }
                 }
             }
@@ -241,8 +241,6 @@ struct ConfigScreen: View {
     }
 
     private func alignFrequencyRange() {
-        model.config.freqMinHz = 1_000
-        model.config.freqMaxHz = 4_000
         model.config.stepHz = 3_000
         model.config.pairSeparationHz = 3_000
         model.config.symbolDurationMs = 20

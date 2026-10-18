@@ -10,10 +10,11 @@ enum SignalAnalyzer {
 
         var onUpdate: ((Update) -> Void)?
         var onLog: ((String) -> Void)?
+        var onFrequency: ((Double, Double) -> Void)?
         private(set) var retainedSampleCount = 0
 
         private let config: TestConfig
-        private let schedule: [PlannedPair]
+        private var schedule: [PlannedPair]
         private let lock = NSLock()
         private var sampleRate = 0.0
         private var chunkDate = Date()
@@ -42,15 +43,18 @@ enum SignalAnalyzer {
         private var pendingPackets: [MatchKey: SentPacket] = [:]
         private var pendingHits: [MatchKey: Hit] = [:]
         private var transmissions: [Transmission] = []
+        private var probeState: ProbeState
+        private var pendingFrequency: (Double, Double)?
 
-        init(config: TestConfig, schedule: [PlannedPair]) {
+        init(config: TestConfig, schedule: [PlannedPair], selectsFrequency: Bool = false) {
             self.config = config.normalized
             self.schedule = schedule
+            self.probeState = selectsFrequency ? .listening : .inactive
         }
 
         func ingest(_ samples: [Float], at date: Date, sampleRate: Double) {
             guard !samples.isEmpty, sampleRate > 0 else { return }
-            let (updates, logs) = locked { () -> ([Update], [String]) in
+            let (updates, logs, band) = locked { () -> ([Update], [String], (Double, Double)?) in
                 if self.sampleRate == 0 { self.sampleRate = sampleRate }
                 chunkDate = date
                 window.append(contentsOf: samples)
@@ -58,9 +62,31 @@ enum SignalAnalyzer {
                 scan()
                 trim()
                 retainedSampleCount = window.count
-                return (drainUpdates(), drainLogs())
+                let band = pendingFrequency
+                pendingFrequency = nil
+                return (drainUpdates(), drainLogs(), band)
             }
             publish(logs: logs, updates: updates)
+            if let band {
+                onFrequency?(band.0, band.1)
+            }
+        }
+
+        /// 反馈已经播出。之后的录音按选中的 `fbegin`/`fend` 解调，握手前听到的采样不再搜索。
+        func useSelectedBand(lowHz: Double, highHz: Double, repeats: Int) {
+            locked {
+                let count = max(1, repeats)
+                schedule = Array(repeating: PlannedPair(lowHz: lowHz, highHz: highHz), count: count)
+                scheduleIndex = 0
+                probeState = .inactive
+                cachedPlan = nil
+                cachedLow = -1
+                cachedHigh = -1
+                heardCount = -1
+                searchFrom = emitted + window.count
+                trim()
+                retainedSampleCount = window.count
+            }
         }
 
         func note(_ packet: SentPacket) {
@@ -124,7 +150,18 @@ enum SignalAnalyzer {
             return body()
         }
 
+        private enum ProbeState {
+            case inactive
+            case listening
+            case holding
+        }
+
         private func scan() {
+            if probeState == .holding { return }
+            if probeState == .listening {
+                scanProbe()
+                return
+            }
             while true {
                 guard let pair = currentPair(), let plan = currentPlan(low: pair.0, high: pair.1) else { return }
                 let audio = filteredWindow(low: pair.0, high: pair.1, preamble: plan.preamble)
@@ -157,7 +194,9 @@ enum SignalAnalyzer {
                         correlation: correlation,
                         peakIndex: candidate,
                         preamble: plan.preamble,
-                        sampleRate: sampleRate
+                        sampleRate: sampleRate,
+                        lowHz: pair.0,
+                        highHz: pair.1
                     )
                     let symbolStart = arrival + plan.preamble.count + plan.gap
                     let packetEndLocal = symbolStart + symbolCount * plan.symbolSamples
@@ -186,6 +225,69 @@ enum SignalAnalyzer {
                 }
                 consume(upToLocal: nextLocal, plan: plan, pair: pair)
                 trim()
+            }
+        }
+
+        private func scanProbe() {
+            let frequency = config.frequency
+            let low = frequency.candidateLowHz
+            let high = frequency.candidateHighHz
+            guard low < high, let plan = currentPlan(low: low, high: high) else { return }
+            let audio = filteredWindow(low: low, high: high, preamble: plan.preamble)
+            let preambleCount = plan.preamble.count
+            guard audio.count >= preambleCount else { return }
+            let localStart = max(0, searchFrom - emitted)
+            let lastLag = audio.count - preambleCount
+            guard lastLag >= localStart else { return }
+            let candidates = candidateLocals(from: localStart, through: lastLag, separation: 2_400, symbolLength: plan.ns)
+            if candidates.isEmpty {
+                let advanced = min(lastLag, localStart + plan.coarseHop * 4)
+                if emitted + advanced > searchFrom {
+                    searchFrom = emitted + advanced
+                }
+                return
+            }
+            var lockedWithoutBand = false
+            for candidate in candidates {
+                guard OFDMModem.naiserLock(samples: audio, peakIndex: candidate) != nil else { continue }
+                let arrival = OFDMModem.earliestArrival(
+                    filtered: audio,
+                    correlation: correlation,
+                    peakIndex: candidate,
+                    preamble: plan.preamble,
+                    sampleRate: sampleRate,
+                    lowHz: low,
+                    highHz: high
+                )
+                guard arrival + preambleCount <= audio.count else { return }
+                if let band = SNRFreq.selectedBand(
+                    samples: audio,
+                    arrival: arrival,
+                    sampleRate: sampleRate,
+                    frequency: frequency
+                ) {
+                    probeState = .holding
+                    pendingFrequency = band
+                    queuedLogs.append(String(
+                        format: "选频 fbegin=%.0f fend=%.0f",
+                        locale: Locale(identifier: "en_US_POSIX"),
+                        band.fbegin,
+                        band.fend
+                    ))
+                    searchFrom = emitted + arrival + preambleCount
+                    return
+                }
+                lockedWithoutBand = true
+            }
+            if lockedWithoutBand {
+                probeState = .inactive
+                schedule = []
+                queuedLogs.append("选频失败，没有 SNR 超过 6 dB 的连续频段")
+                searchFrom = emitted + audio.count
+                return
+            }
+            if let last = candidates.last {
+                searchFrom = max(searchFrom, emitted + min(last + 2_400, lastLag))
             }
         }
 

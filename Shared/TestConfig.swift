@@ -23,6 +23,7 @@ struct PlannedPair: Codable, Hashable, Identifiable {
 
 struct TestConfig: Codable, Equatable {
     var mode: TestMode = .cpfsk
+    var frequency = FrequencyConfig()
     var freqMinHz: Double = 1_000
     var freqMaxHz: Double = 4_000
     var stepHz: Double = 3_000
@@ -45,11 +46,13 @@ struct TestConfig: Codable, Equatable {
 
     var normalized: TestConfig {
         var copy = self
-        copy.freqMinHz = copy.freqMinHz.clamped(to: 1_000...22_000)
-        copy.freqMaxHz = copy.freqMaxHz.clamped(to: 1_000...22_000)
-        if copy.freqMaxHz < copy.freqMinHz {
-            swap(&copy.freqMinHz, &copy.freqMaxHz)
+        copy.frequency.candidateLowHz = copy.frequency.candidateLowHz.clamped(to: 50...22_000)
+        copy.frequency.candidateHighHz = copy.frequency.candidateHighHz.clamped(to: 50...22_000)
+        if copy.frequency.candidateHighHz < copy.frequency.candidateLowHz {
+            swap(&copy.frequency.candidateLowHz, &copy.frequency.candidateHighHz)
         }
+        copy.freqMinHz = copy.frequency.candidateLowHz
+        copy.freqMaxHz = copy.frequency.candidateHighHz
         copy.stepHz = copy.stepHz.clamped(to: 50...4_000)
         copy.pairSeparationHz = max(1_000, copy.pairSeparationHz)
         copy.symbolDurationMs = copy.symbolDurationMs.clamped(to: 10...200)
@@ -68,8 +71,8 @@ struct TestConfig: Codable, Equatable {
     func plannedPairs() -> [PlannedPair] {
         let config = normalized
         var pairs: [PlannedPair] = []
-        var frequency = config.freqMinHz
-        while frequency + config.pairSeparationHz <= config.freqMaxHz + 0.5 {
+        var frequency = config.frequency.candidateLowHz
+        while frequency + config.pairSeparationHz <= config.frequency.candidateHighHz + 0.5 {
             pairs.append(PlannedPair(lowHz: frequency, highHz: frequency + config.pairSeparationHz))
             frequency += config.stepHz
         }
@@ -80,8 +83,8 @@ struct TestConfig: Codable, Equatable {
     var expectedSignalSeconds: Double {
         let config = normalized
         let pair = config.plannedPairs().first
-        let low = pair?.lowHz ?? config.freqMinHz
-        let high = pair?.highHz ?? min(config.freqMaxHz, low + config.pairSeparationHz)
+        let low = pair?.lowHz ?? config.frequency.candidateLowHz
+        let high = pair?.highHz ?? min(config.frequency.candidateHighHz, low + config.pairSeparationHz)
         return OFDMModem.signalSeconds(f0: low, f1: high, config: config)
     }
 
@@ -96,6 +99,7 @@ struct TestConfig: Codable, Equatable {
 extension TestConfig {
     private enum CodingKeys: String, CodingKey {
         case mode
+        case frequency
         case freqMinHz
         case freqMaxHz
         case stepHz
@@ -116,6 +120,11 @@ extension TestConfig {
         mode = try container.decodeIfPresent(TestMode.self, forKey: .mode) ?? .cpfsk
         freqMinHz = try container.decodeIfPresent(Double.self, forKey: .freqMinHz) ?? 1_000
         freqMaxHz = try container.decodeIfPresent(Double.self, forKey: .freqMaxHz) ?? 4_000
+        if let frequency = try container.decodeIfPresent(FrequencyConfig.self, forKey: .frequency) {
+            self.frequency = frequency
+        } else {
+            frequency = FrequencyConfig(candidateLowHz: freqMinHz, candidateHighHz: freqMaxHz)
+        }
         stepHz = try container.decodeIfPresent(Double.self, forKey: .stepHz) ?? 3_000
         pairSeparationHz = try container.decodeIfPresent(Double.self, forKey: .pairSeparationHz) ?? 3_000
         symbolDurationMs = try container.decodeIfPresent(Double.self, forKey: .symbolDurationMs) ?? 20
@@ -132,6 +141,7 @@ extension TestConfig {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(mode, forKey: .mode)
+        try container.encode(frequency, forKey: .frequency)
         try container.encode(freqMinHz, forKey: .freqMinHz)
         try container.encode(freqMaxHz, forKey: .freqMaxHz)
         try container.encode(stepHz, forKey: .stepHz)
@@ -166,9 +176,10 @@ enum ConfigStore {
             save(loaded)
         }
         // 近超声扫描改成 watercomms 的 1–4 kHz、20 ms 符号和 20 ms 间隔。
-        if loaded.freqMinHz >= 10_000 {
-            loaded.freqMinHz = 1_000
-            loaded.freqMaxHz = 4_000
+        if loaded.frequency.candidateLowHz >= 10_000 || loaded.freqMinHz >= 10_000 {
+            loaded.frequency = FrequencyConfig()
+            loaded.freqMinHz = loaded.frequency.candidateLowHz
+            loaded.freqMaxHz = loaded.frequency.candidateHighHz
             loaded.stepHz = 3_000
             loaded.pairSeparationHz = 3_000
             loaded.symbolDurationMs = 20

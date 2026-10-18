@@ -102,6 +102,7 @@ iPhone 每处理完一个包写一条「包 X 前导对齐=是/否 解出=hex或
 ```bash
 swiftc -O -o /tmp/aquaecho-selfcheck \
   Shared/PacketLayout.swift Shared/ExtendedHamming.swift Shared/ConvolutionalCode.swift \
+  Shared/FrequencyConfig.swift Shared/SNRFreq.swift Shared/FeedbackSignal.swift \
   Shared/TestConfig.swift Shared/Models.swift Shared/Goertzel.swift \
   Shared/NaiserWaveform.swift Shared/OFDMModem.swift \
   Shared/Scoring.swift Shared/SignalAnalyzer.swift Shared/CSVExporter.swift \

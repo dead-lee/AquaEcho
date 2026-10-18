@@ -156,49 +156,71 @@ final class WatchModel: ObservableObject {
             if volume < 0.95 {
                 status = "音量不足，请旋转数码表冠调到最大"
             }
-            log("开始发送 \(config.mode.title)，\(config.plannedPairs().count) 组，重复 \(config.repeats) 次")
-            try await Task.sleep(nanoseconds: 400_000_000)
-            var sequence = 0
-            var lastPair = ""
-            let pairs = config.plannedPairs()
-            for pair in pairs {
-                if stopRequested { break }
-                if pair.label != lastPair {
-                    lastPair = pair.label
-                    log("当前频率对 \(pair.label)")
+            let allowed = await requestMicrophone()
+            if !allowed {
+                log("没有麦克风权限，无法接收反馈")
+                status = "没有麦克风权限"
+            } else {
+                let band = config.frequency
+                log("开始探测，候选 \(HzFormat.string(band.candidateLowHz)) / \(HzFormat.string(band.candidateHighHz)) Hz，重复 \(config.repeats) 次")
+                try await Task.sleep(nanoseconds: 400_000_000)
+                let probe = FeedbackSignal.soundingSignal(config: config)
+                log("开始发送探测前导，不携带数据 \(probe.samples.count) 样本")
+                let inputRate = try player.beginRecording()
+                let probeDate = try await player.play(samples: probe.samples, leadSamples: probe.leadSamples)
+                log("探测前导播放结束 \(RunLog.timestamp(probeDate))")
+                if !stopRequested {
+                    log("等待反馈")
+                    try await Task.sleep(nanoseconds: 3_000_000_000)
                 }
-                for repeatIndex in 0..<config.repeats {
-                    if stopRequested { break }
-                    sequence += 1
-                    let payload = PacketLayout.encode(lowHz: pair.lowHz, highHz: pair.highHz, sequence: repeatIndex)
-                    let rendered = try render(pair: pair, payload: payload, config: config)
-                    log("编码完成 \(config.mode.title) \(pair.label) \(rendered.samples.count) 样本 载荷 \(PacketFactory.hex(payload))")
-                    status = "\(sequence) · \(pair.label)"
-                    link.send(WCEnvelope(
-                        kind: .progress,
-                        config: nil,
-                        packet: nil,
-                        packets: nil,
-                        progress: "正在发送 \(pair.label)（\(repeatIndex + 1)/\(config.repeats)）"
-                    ))
-                    let sendDate = try await player.play(samples: rendered.samples, leadSamples: rendered.leadSamples)
-                    log("发送时间 \(RunLog.timestamp(sendDate)) 序号 \(sequence) \(pair.label)")
-                    log("播放结束 序号 \(sequence) 时间 \(RunLog.timestamp(Date()))")
-                    let packet = SentPacket(
-                        sequence: sequence,
-                        repeatIndex: repeatIndex,
-                        lowHz: pair.lowHz,
-                        highHz: pair.highHz,
-                        payloadHex: PacketFactory.hex(payload),
-                        watchSendTimestamp: sendDate.timeIntervalSince1970
-                    )
-                    sent.append(packet)
-                    link.send(WCEnvelope(kind: .packet, config: nil, packet: packet, packets: nil, progress: nil))
+                let heard = player.endRecording()
+                if !stopRequested {
+                    if let selected = FeedbackSignal.frequencies(
+                        in: heard,
+                        sampleRate: inputRate,
+                        frequency: config.frequency
+                    ) {
+                        log("反馈 fbegin=\(HzFormat.string(selected.fbegin)) fend=\(HzFormat.string(selected.fend))")
+                        let pair = PlannedPair(lowHz: selected.fbegin, highHz: selected.fend)
+                        log("当前频率对 \(pair.label)")
+                        var sequence = 0
+                        for repeatIndex in 0..<config.repeats {
+                            if stopRequested { break }
+                            sequence += 1
+                            let payload = PacketLayout.encode(lowHz: pair.lowHz, highHz: pair.highHz, sequence: repeatIndex)
+                            let rendered = try render(pair: pair, payload: payload, config: config)
+                            log("编码完成 \(config.mode.title) \(pair.label) \(rendered.samples.count) 样本 载荷 \(PacketFactory.hex(payload))")
+                            status = "\(sequence) · \(pair.label)"
+                            link.send(WCEnvelope(
+                                kind: .progress,
+                                config: nil,
+                                packet: nil,
+                                packets: nil,
+                                progress: "正在发送 \(pair.label)（\(repeatIndex + 1)/\(config.repeats)）"
+                            ))
+                            let sendDate = try await player.play(samples: rendered.samples, leadSamples: rendered.leadSamples)
+                            log("发送时间 \(RunLog.timestamp(sendDate)) 序号 \(sequence) \(pair.label)")
+                            log("播放结束 序号 \(sequence) 时间 \(RunLog.timestamp(Date()))")
+                            let packet = SentPacket(
+                                sequence: sequence,
+                                repeatIndex: repeatIndex,
+                                lowHz: pair.lowHz,
+                                highHz: pair.highHz,
+                                payloadHex: PacketFactory.hex(payload),
+                                watchSendTimestamp: sendDate.timeIntervalSince1970
+                            )
+                            sent.append(packet)
+                            link.send(WCEnvelope(kind: .packet, config: nil, packet: packet, packets: nil, progress: nil))
+                        }
+                        if !stopRequested {
+                            status = "发送完成"
+                            log("发送完成，共 \(sent.count) 包")
+                        }
+                    } else {
+                        log("没有解析到反馈")
+                        status = "没有解析到反馈"
+                    }
                 }
-            }
-            if !stopRequested {
-                status = "发送完成"
-                log("发送完成，共 \(sent.count) 包")
             }
         } catch {
             status = error.localizedDescription
@@ -245,6 +267,24 @@ final class WatchModel: ObservableObject {
             if !holdLogSync, !pendingLogs.isEmpty {
                 retryLogFlush()
             }
+        }
+    }
+
+    private func requestMicrophone() async -> Bool {
+        let application = AVAudioApplication.shared
+        switch application.recordPermission {
+        case .granted:
+            return true
+        case .denied:
+            return false
+        case .undetermined:
+            return await withCheckedContinuation { continuation in
+                AVAudioApplication.requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        @unknown default:
+            return false
         }
     }
 

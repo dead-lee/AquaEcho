@@ -21,7 +21,7 @@ struct WatchRootView: View {
                 .foregroundStyle(model.reachable ? .green : .secondary)
             Text(model.config.mode.title)
                 .font(.headline)
-            Text("\(model.config.plannedPairs().count) 组 · 重复 \(model.config.repeats) 次")
+            Text("\(HzFormat.string(model.config.frequency.candidateLowHz))–\(HzFormat.string(model.config.frequency.candidateHighHz)) Hz · 重复 \(model.config.repeats) 次")
                 .font(.caption2)
             Text("音量 \(volumePercent)%")
                 .font(.caption2)

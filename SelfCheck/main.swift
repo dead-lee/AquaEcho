@@ -103,13 +103,15 @@ expectEqual(
     pattern,
     "symbol 2 interleave round trip"
 )
+let candidateLow = fresh.frequency.candidateLowHz
+let candidateHigh = fresh.frequency.candidateHighHz
 let rendered = OFDMModem.playback(
     bits: probeCoded,
-    f0: 1_000,
-    f1: 4_000,
+    f0: candidateLow,
+    f1: candidateHigh,
     config: fresh
 )
-let probePlan = OFDMModem.plan(f0: 1_000, f1: 4_000, config: fresh, bitCount: probeCoded.count)
+let probePlan = OFDMModem.plan(f0: candidateLow, f1: candidateHigh, config: fresh, bitCount: probeCoded.count)
 let leadSamples = Int((fresh.leadSilenceMs / 1_000 * rate).rounded())
 let trailSamples = Int((fresh.trailSilenceMs / 1_000 * rate).rounded())
 expectEqual(rendered.count, leadSamples + probePlan.packetSamples + trailSamples, "packet length")
@@ -594,7 +596,9 @@ for delay in [36, 60] {
         correlation: correlation,
         peakIndex: peak,
         preamble: probePlan.preamble,
-        sampleRate: rate
+        sampleRate: rate,
+        lowHz: band.lowHz,
+        highHz: band.highHz
     )
     expect(abs(arrival - trueStart) <= 8, "echo \(delay) earliest path delta \(arrival - trueStart)")
     expect(abs(arrival - trueStart) < abs(arrival - (trueStart + delay)), "echo \(delay) sync stays on the direct path")
@@ -622,7 +626,9 @@ for delay in [240, 320] {
         correlation: correlation,
         peakIndex: peak,
         preamble: probePlan.preamble,
-        sampleRate: rate
+        sampleRate: rate,
+        lowHz: band.lowHz,
+        highHz: band.highHz
     )
     expect(abs(arrival - trueStart) <= 8, "echo \(delay) beyond the cyclic prefix stays on the direct path, delta \(arrival - trueStart)")
     let echoed = receivePackets(buffer, schedule: [band], packets: [echoCase.sent]).transmissions
@@ -659,6 +665,71 @@ shortReceiver.onLog = { shortLogs.append($0) }
 feed(shortReceiver, audio: shortTone, rate: rate, started: started)
 _ = shortReceiver.finish()
 expect(shortLogs.allSatisfy { !$0.hasPrefix("解调=") }, "short tone does not finish a frame \(shortLogs)")
+
+let formulaReal = [[1.0, 1.0, 1.0, 3.0]]
+let formulaImag = [[0.0, 0.0, 0.0, 0.0]]
+let formula = SNRFreq.calculateSNR(
+    rxReal: formulaReal,
+    rxImag: formulaImag,
+    groundTruth: [1],
+    symbolStart: 0,
+    symbolEnd: 4
+)
+expect(abs(formula[0] - 10 * log10(3)) < 1e-6, "calculate_snr \(formula[0])")
+expect(SNRFreq.longestInterval([0, 7, 7, 7, 0, 8, 8]) == 1...3, "longest run keeps the longer interval")
+expect(SNRFreq.longestInterval([6, 6.1]) == 1...1, "threshold is strictly above 6 dB")
+expect(SNRFreq.longestInterval([1, 2, 3]) == nil, "nothing at or below 6 dB")
+
+let feedbackLow = 1_800.0
+let feedbackHigh = 2_600.0
+var feedbackBuffer = [Float](repeating: 0, count: 3_000)
+feedbackBuffer.append(contentsOf: FeedbackSignal.encodeFeedbackSignal(
+    fbegin: feedbackLow,
+    fend: feedbackHigh,
+    sampleRate: rate
+))
+let parsed = FeedbackSignal.frequencies(
+    in: feedbackBuffer,
+    sampleRate: rate,
+    frequency: fresh.frequency
+)
+expect(parsed?.fbegin == feedbackLow && parsed?.fend == feedbackHigh, "feedback \(String(describing: parsed))")
+let edge = FeedbackSignal.frequencies(
+    in: FeedbackSignal.encodeFeedbackSignal(
+        fbegin: fresh.frequency.candidateLowHz,
+        fend: fresh.frequency.candidateHighHz,
+        sampleRate: rate
+    ),
+    sampleRate: rate,
+    frequency: fresh.frequency
+)
+expect(
+    edge?.fbegin == fresh.frequency.candidateLowHz && edge?.fend == fresh.frequency.candidateHighHz,
+    "feedback edges \(String(describing: edge))"
+)
+
+let sounding = FeedbackSignal.soundingSignal(config: fresh)
+var selectedBand: (Double, Double)?
+let selector = SignalAnalyzer.Receiver(config: fresh, schedule: [], selectsFrequency: true)
+selector.onFrequency = { selectedBand = ($0, $1) }
+feed(selector, audio: sounding.samples, rate: rate, started: started)
+expect(selectedBand != nil, "probe selects a band")
+if let selectedBand {
+    let payload = PacketLayout.encode(lowHz: selectedBand.0, highHz: selectedBand.1, sequence: 0, random: 3)
+    let packetAudio = playbackPacket(payload, lowHz: selectedBand.0, highHz: selectedBand.1)
+    selector.useSelectedBand(lowHz: selectedBand.0, highHz: selectedBand.1, repeats: 1)
+    selector.note(SentPacket(
+        sequence: 1,
+        repeatIndex: 0,
+        lowHz: selectedBand.0,
+        highHz: selectedBand.1,
+        payloadHex: PacketFactory.hex(payload),
+        watchSendTimestamp: started.timeIntervalSince1970
+    ))
+    feed(selector, audio: packetAudio, rate: rate, started: started.addingTimeInterval(1))
+    let selectedScore = selector.finish()
+    expect(selectedScore.first?.transmissions.first?.passed == true, "data on the selected band decodes")
+}
 
 if failures.isEmpty {
     print("SELF_CHECK_OK \(analysisPairs.map { "\($0.label)=\($0.score.total)" }.joined(separator: ", "))")

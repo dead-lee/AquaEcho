@@ -18,6 +18,8 @@ final class TonePlayer {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var attached = false
+    private var inputTap = false
+    private var recorded: SampleBox?
     private let sampleRate: Double = 48_000
     private let playbackLock = NSLock()
     private var playbackDone: CheckedContinuation<Void, Never>?
@@ -36,9 +38,9 @@ final class TonePlayer {
     func prepare() throws {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .measurement, policy: .longFormAudio, options: [])
+            try session.setCategory(.playAndRecord, mode: .measurement, policy: .longFormAudio, options: [])
         } catch {
-            try session.setCategory(.playback, mode: .default, policy: .longFormAudio, options: [])
+            try session.setCategory(.playAndRecord, mode: .default, policy: .longFormAudio, options: [])
         }
         try session.setActive(true)
 
@@ -59,7 +61,35 @@ final class TonePlayer {
         }
     }
 
+    func beginRecording() throws -> Double {
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw TonePlayerError.buffer
+        }
+        recorded = SampleBox()
+        input.installTap(onBus: 0, bufferSize: 4_096, format: format) { [weak self] buffer, _ in
+            let frames = Int(buffer.frameLength)
+            guard frames > 0, let channel = buffer.floatChannelData?[0] else { return }
+            self?.recorded?.append(Array(UnsafeBufferPointer(start: channel, count: frames)))
+        }
+        inputTap = true
+        if !engine.isRunning {
+            try engine.start()
+        }
+        return format.sampleRate
+    }
+
+    func endRecording() -> [Float] {
+        let samples = recorded?.samples ?? []
+        recorded = nil
+        finishRecording()
+        return samples
+    }
+
     func stop() {
+        finishRecording()
+        recorded = nil
         player.stop()
         engine.stop()
         finishPlayback()
@@ -97,6 +127,12 @@ final class TonePlayer {
         return clock.date
     }
 
+    private func finishRecording() {
+        guard inputTap else { return }
+        inputTap = false
+        engine.inputNode.removeTap(onBus: 0)
+    }
+
     private func finishPlayback() {
         playbackLock.lock()
         let continuation = playbackDone
@@ -108,4 +144,22 @@ final class TonePlayer {
 
 private final class SendClock: @unchecked Sendable {
     var date = Date()
+}
+
+private final class SampleBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [Float] = []
+
+    func append(_ samples: [Float]) {
+        lock.lock()
+        stored.append(contentsOf: samples)
+        lock.unlock()
+    }
+
+    var samples: [Float] {
+        lock.lock()
+        let copy = stored
+        lock.unlock()
+        return copy
+    }
 }

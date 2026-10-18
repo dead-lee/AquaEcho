@@ -616,6 +616,17 @@ enum OFDMModem {
         return spectrum
     }
 
+    static func spectrum(_ samples: [Float]) -> (real: [Float], imag: [Float]) {
+        forwardDFT(samples, [Float](repeating: 0, count: samples.count))
+    }
+
+    static func magnitudeSpectrum(_ samples: [Float]) -> [Double] {
+        let spectrum = spectrum(samples)
+        return zip(spectrum.real, spectrum.imag).map { real, imag in
+            Double((real * real + imag * imag).squareRoot())
+        }
+    }
+
     private static func forwardDFT(_ realIn: [Float], _ imagIn: [Float]) -> (real: [Float], imag: [Float]) {
         transformDFT(realIn, imagIn, inverse: false)
     }
@@ -790,13 +801,16 @@ enum OFDMModem {
 
     /// find_symbol.m 的离线同步。相关峰只是入口：先向前最多 960 点，取仍超过峰值 0.4 倍的最早位置，
     /// 再从前 300 点起取一段和前导等长的录音做信道估计，用最早的冲激峰当作前导起点。
+    /// 信道估计只用 `lowHz...highHz`，探测时是候选频段，数据时是这次选中的频段。
     /// find_symbol 里加回的 10000 点只是因为他们先裁掉了文件开头，这里的下标已经在整段录音上。
     static func earliestArrival(
         filtered: [Float],
         correlation: [Float],
         peakIndex: Int,
         preamble: [Float],
-        sampleRate: Double
+        sampleRate: Double,
+        lowHz: Double,
+        highHz: Double
     ) -> Int {
         guard correlation.indices.contains(peakIndex), preamble.count > 1, sampleRate > 0 else { return peakIndex }
         let threshold = correlation[peakIndex] * 0.4
@@ -817,8 +831,8 @@ enum OFDMModem {
         var channelReal = [Float](repeating: 0, count: length)
         var channelImag = [Float](repeating: 0, count: length)
         let delta = sampleRate / Double(length)
-        let begin = Int((1_000 / delta).rounded()) - 1
-        let end = Int((4_000 / delta).rounded()) - 1
+        let begin = Int((min(lowHz, highHz) / delta).rounded()) - 1
+        let end = Int((max(lowHz, highHz) / delta).rounded()) - 1
         guard begin >= 0, end < length, begin <= end else { return leading }
         var peakMagnitude = Float(0)
         for bin in begin...end {

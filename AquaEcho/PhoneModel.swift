@@ -84,9 +84,8 @@ final class PhoneModel: ObservableObject {
         let config = config.normalized
         self.config = config
         ConfigStore.save(config)
-        let plan = config.plannedPairs()
-        guard !plan.isEmpty else {
-            lastError = "这个频率范围放不下一组测试。请提高上限，或减小步进。"
+        guard config.frequency.candidateHighHz > config.frequency.candidateLowHz else {
+            lastError = "候选频段上限要高于下限。"
             log("错误 \(lastError ?? "")")
             return
         }
@@ -107,16 +106,10 @@ final class PhoneModel: ObservableObject {
         pairs = []
         csvURL = nil
         receivedCount = 0
-        expectedCount = plan.count * config.repeats
+        expectedCount = config.repeats
         didScore = false
         activeConfig = config
-        var schedule: [PlannedPair] = []
-        for pair in plan {
-            for _ in 0..<config.repeats {
-                schedule.append(pair)
-            }
-        }
-        let live = SignalAnalyzer.Receiver(config: config, schedule: schedule)
+        let live = SignalAnalyzer.Receiver(config: config, schedule: [], selectsFrequency: true)
         live.onUpdate = { [weak self] update in
             DispatchQueue.main.async {
                 self?.show(update)
@@ -125,6 +118,11 @@ final class PhoneModel: ObservableObject {
         live.onLog = { [weak self] line in
             DispatchQueue.main.async {
                 self?.log(line)
+            }
+        }
+        live.onFrequency = { [weak self] fbegin, fend in
+            Task { @MainActor in
+                self?.playFeedback(fbegin: fbegin, fend: fend)
             }
         }
         receiver = live
@@ -206,6 +204,27 @@ final class PhoneModel: ObservableObject {
             beginFinish()
         case .start, .stop:
             break
+        }
+    }
+
+    private func playFeedback(fbegin: Double, fend: Double) {
+        guard isRunning else { return }
+        let config = activeConfig
+        log("选频 fbegin=\(HzFormat.string(fbegin)) fend=\(HzFormat.string(fend))，播放反馈")
+        let samples = FeedbackSignal.playback(fbegin: fbegin, fend: fend, config: config)
+        let repeats = config.repeats
+        Task { @MainActor in
+            do {
+                try await self.capture.play(samples)
+            } catch {
+                self.log("错误 \(error.localizedDescription)")
+                return
+            }
+            guard self.isRunning else { return }
+            self.log("反馈已播放")
+            self.demodQueue.async { [weak self] in
+                self?.receiver?.useSelectedBand(lowHz: fbegin, highHz: fend, repeats: repeats)
+            }
         }
     }
 
