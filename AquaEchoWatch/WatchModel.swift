@@ -25,6 +25,9 @@ final class WatchModel: ObservableObject {
 
     init() {
         config = ConfigStore.load()
+        player.onLog = { [weak self] message in
+            self?.log(message)
+        }
         foreground.onEvent = { [weak self] message in
             self?.log(message)
             self?.foregroundStatus = self?.foreground.status ?? message

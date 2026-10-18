@@ -128,6 +128,9 @@ enum OFDMModem {
         return output
     }
 
+    /// 解调日志。接收端把它接到现有的日志队列。
+    static var onLog: ((String) -> Void)?
+
     /// `symbolStart` 是第一个符号（含循环前缀）在 `window` 里的下标。
     static func demodulate(window: [Float], symbolStart: Int, plan: Plan) -> Demodulated? {
         let frequency = demodulateFrequency(window: window, symbolStart: symbolStart, plan: plan)
@@ -136,7 +139,11 @@ enum OFDMModem {
         }
         guard let frequency else { return equalized }
         // 两条通路都解得出时，留编码比特离卷积码更近的那条。时域均衡只在它更干净时替换频域结果。
-        if codedDisagreement(equalized) < codedDisagreement(frequency) {
+        let timeDisagreement = codedDisagreement(equalized)
+        let frequencyDisagreement = codedDisagreement(frequency)
+        let choice = timeDisagreement < frequencyDisagreement ? "时域" : "频域"
+        onLog?("时域比较 时域差异=\(timeDisagreement) 频域差异=\(frequencyDisagreement) 采用=\(choice)")
+        if timeDisagreement < frequencyDisagreement {
             return equalized
         }
         return frequency

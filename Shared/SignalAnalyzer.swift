@@ -50,6 +50,13 @@ enum SignalAnalyzer {
             self.config = config.normalized
             self.schedule = schedule
             self.probeState = selectsFrequency ? .listening : .inactive
+            OFDMModem.onLog = { [weak self] line in
+                self?.queuedLogs.append(line)
+            }
+        }
+
+        deinit {
+            OFDMModem.onLog = nil
         }
 
         func ingest(_ samples: [Float], at date: Date, sampleRate: Double) {

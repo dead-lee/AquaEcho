@@ -24,6 +24,7 @@ final class TonePlayer {
     private let playbackLock = NSLock()
     private var playbackDone: CheckedContinuation<Void, Never>?
     private var playbackVolume: Float = 1
+    var onLog: ((String) -> Void)?
 
     var outputVolume: Float { AVAudioSession.sharedInstance().outputVolume }
 
@@ -99,9 +100,11 @@ final class TonePlayer {
 
     func play(samples: [Float], leadSamples: Int) async throws -> Date {
         guard !samples.isEmpty else { throw TonePlayerError.empty }
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
-              let channel = buffer.floatChannelData?[0] else {
+        if !engine.isRunning {
+            try prepare()
+        }
+        let buffer = try playbackBuffer(sampleCount: samples.count)
+        guard let channel = buffer.floatChannelData?[0] else {
             throw TonePlayerError.buffer
         }
         buffer.frameLength = AVAudioFrameCount(samples.count)
@@ -126,6 +129,28 @@ final class TonePlayer {
             clock.date = Date().addingTimeInterval(latency + leadSeconds)
         }
         return clock.date
+    }
+
+    private func playbackBuffer(sampleCount: Int) throws -> AVAudioPCMBuffer {
+        if let buffer = makePlaybackBuffer(sampleCount: sampleCount) {
+            return buffer
+        }
+        try prepare()
+        if let buffer = makePlaybackBuffer(sampleCount: sampleCount) {
+            return buffer
+        }
+        let running = engine.isRunning ? "是" : "否"
+        onLog?("无法创建播放缓冲 sampleRate=48000 count=\(sampleCount) engineRunning=\(running)")
+        throw TonePlayerError.buffer
+    }
+
+    private func makePlaybackBuffer(sampleCount: Int) -> AVAudioPCMBuffer? {
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(sampleCount)),
+              buffer.floatChannelData?[0] != nil else {
+            return nil
+        }
+        return buffer
     }
 
     private func finishRecording() {
