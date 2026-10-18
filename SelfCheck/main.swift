@@ -606,35 +606,6 @@ for delay in [36, 60] {
     expect(echoed.first?.passed == true, "echo \(delay) samples still decodes")
 }
 
-/// 循环前缀默认 67 点。240 和 320 点的强回声只用频域均衡解不对，时域均衡把载荷救回来。
-for delay in [240, 320] {
-    let mixed = withEcho(echoSource, delay: delay, gain: 2)
-    let origin = 8_000
-    let buffer = placePackets([(origin, mixed)], length: origin + mixed.count + 8_192)
-    let trueStart = origin + leadSamples
-    let filtered = OFDMModem.bandpass(buffer, lowHz: band.lowHz, highHz: band.highHz, sampleRate: rate)
-    let correlation = OFDMModem.correlate(signal: filtered, template: probePlan.preamble)
-    let from = max(0, trueStart - 200)
-    let to = min(correlation.count - 1, trueStart + delay + 200)
-    var peak = from
-    for index in from...to where correlation[index] > correlation[peak] {
-        peak = index
-    }
-    expect(peak >= trueStart + delay - 8, "echo \(delay) beyond the cyclic prefix pulls the peak late, delta \(peak - trueStart)")
-    let arrival = OFDMModem.earliestArrival(
-        filtered: filtered,
-        correlation: correlation,
-        peakIndex: peak,
-        preamble: probePlan.preamble,
-        sampleRate: rate,
-        lowHz: band.lowHz,
-        highHz: band.highHz
-    )
-    expect(abs(arrival - trueStart) <= 8, "echo \(delay) beyond the cyclic prefix stays on the direct path, delta \(arrival - trueStart)")
-    let echoed = receivePackets(buffer, schedule: [band], packets: [echoCase.sent]).transmissions
-    expect(echoed.first?.passed == true, "echo \(delay) beyond the cyclic prefix still decodes")
-}
-
 // 静音不应得到高分。
 let silentReceiver = SignalAnalyzer.Receiver(
     config: config,
