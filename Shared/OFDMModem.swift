@@ -1,21 +1,36 @@
 import Accelerate
 import Foundation
 
-/// watercomms 的默认数据通路：1000–4000 Hz，naiser3 前导，差分 BPSK-OFDM，循环前缀。
-/// 符号长度 960 点时，差分比特来自 Decoder_offline 的时域均衡（480 抽头，前看 100 点）。
-/// 0 映射到子载波实部 +1，1 映射到 −1。卷积编码由调用方完成。
-enum OFDMModem {
-    static let playbackAmplitude: Float = 0.98
-    /// Naiser.java 的 PN、Nu、N0。8 段有用信号之间和末尾各留 N0 点静音。
-    static let naiserPN: [Float] = [1, -1, -1, -1, -1, -1, 1, -1]
+enum OFDMConstants {
+    static let symbolLength = 960
+    static let cyclicPrefixMaxRatio = 0.25
+    static let timeEqualizerTaps = 128
+    static let timeEqualizerOffset = 100
+    static let timeEqualizerLambda = 1e-5
     static let naiserNu = 960
     static let naiserN0 = 240
     static let naiserThreshold = 0.6
     static let naiserWindow = 1_200
     static let naiserStep = 8
-    /// find_symbol.m 的 fir1 阶数，群延迟是阶数的一半。
+    static let correlationSeekbackRatio = 0.4
     static let filterOrder = 96
-    static let filterDelay = filterOrder / 2
+    static let noiseBinOffsets = [-8, -6, -4, 4, 6, 8]
+    static let coarseHopMin = 8
+    static let coarseHopSeconds = 0.0005
+    static let snrSelectThresholdDb = 6.0
+    static let feedbackListenSeconds = 3.0
+    static let preambleGapSamples = 960
+}
+
+/// watercomms 的默认数据通路：naiser3 前导，差分 BPSK-OFDM，循环前缀。
+/// 符号长度等于 `OFDMConstants.symbolLength` 时，差分比特来自 Decoder_offline 的时域均衡。
+/// 0 映射到子载波实部 +1，1 映射到 −1。卷积编码由调用方完成。
+enum OFDMModem {
+    static let playbackAmplitude: Float = 0.98
+    /// Naiser.java 的 PN。有用段和静音长度见 `OFDMConstants`。
+    static let naiserPN: [Float] = [1, -1, -1, -1, -1, -1, 1, -1]
+    /// find_symbol.m 的 fir1 阶数，群延迟是阶数的一半。
+    static let filterDelay = OFDMConstants.filterOrder / 2
 
     struct Plan {
         var sampleRate: Double
@@ -49,8 +64,8 @@ enum OFDMModem {
         let rate = config.sampleRate
         let ns = max(64, Int((config.symbolDurationMs / 1_000 * rate).rounded()))
         var cp = max(0, Int((config.cyclicPrefixMs / 1_000 * rate).rounded()))
-        cp = min(cp, ns / 4)
-        let gap = max(0, Int((config.silenceDurationMs / 1_000 * rate).rounded()))
+        cp = min(cp, Int((Double(ns) * OFDMConstants.cyclicPrefixMaxRatio).rounded()))
+        let gap = OFDMConstants.preambleGapSamples
         let spacing = rate / Double(ns)
         var lowBin = Int((min(f0, f1) / spacing).rounded())
         var highBin = Int((max(f0, f1) / spacing).rounded()) - 1
@@ -74,7 +89,7 @@ enum OFDMModem {
             preamble: preamble,
             lowHz: lowHz,
             highHz: highHz,
-            coarseHop: max(8, Int((0.0005 * rate).rounded())),
+            coarseHop: max(OFDMConstants.coarseHopMin, Int((OFDMConstants.coarseHopSeconds * rate).rounded())),
             carriers: carriers,
             noiseBins: noiseBins,
             trainingBits: training,
@@ -150,11 +165,11 @@ enum OFDMModem {
     }
 
     /// Decoder_offline.m 在 `differential_based_time = 1` 时用这条通路出比特。
-    /// Ns=960 时 tap_num=480、offset=100、岭回归 1e-5。尾巴放不进窗口就交给频域均衡。
+    /// 符号长度匹配时做时域均衡。尾巴放不进窗口就交给频域均衡。
     private static func demodulateTimeEqualized(window: [Float], symbolStart: Int, plan: Plan) -> Demodulated? {
-        guard plan.ns == 960 else { return nil }
-        let tapCount = 480
-        let offset = 100
+        guard plan.ns == OFDMConstants.symbolLength else { return nil }
+        let tapCount = OFDMConstants.timeEqualizerTaps
+        let offset = OFDMConstants.timeEqualizerOffset
         let symbolCount = 1 + plan.dataCounts.count
         let transmitted = synthesize(bits: plan.trainingBits, carriers: plan.carriers, ns: plan.ns)
         guard let training = equalizerInput(
@@ -254,7 +269,7 @@ enum OFDMModem {
                 }
             }
         }
-        let lambda = 1e-5
+        let lambda = OFDMConstants.timeEqualizerLambda
         for index in 0..<taps {
             gram[index * taps + index] += lambda
         }
@@ -496,9 +511,9 @@ enum OFDMModem {
         return output
     }
 
-    /// find_symbol.m：96 阶 Hamming 带通，低频比频带低 200 Hz，高频停在频带上沿。补偿群延迟后，下标与输入对齐。
+    /// find_symbol.m：Hamming 带通，低频比频带低 200 Hz，高频停在频带上沿。补偿群延迟后，下标与输入对齐。
     static func bandpass(_ samples: [Float], lowHz: Double, highHz: Double, sampleRate: Double) -> [Float] {
-        guard samples.count > filterOrder, sampleRate > 0 else { return samples }
+        guard samples.count > OFDMConstants.filterOrder, sampleRate > 0 else { return samples }
         let kernel = bandpassTaps(lowHz: lowHz, highHz: highHz, sampleRate: sampleRate).map { Float($0) }
         let outputCount = samples.count - kernel.count + 1
         guard outputCount > 0 else { return samples }
@@ -806,7 +821,7 @@ enum OFDMModem {
         return setup
     }
 
-    /// find_symbol.m 的离线同步。相关峰只是入口：先向前最多 960 点，取仍超过峰值 0.4 倍的最早位置，
+    /// find_symbol.m 的离线同步。相关峰只是入口：先向前一个符号长度，取仍超过峰值一定比例的最早位置，
     /// 再从前 300 点起取一段和前导等长的录音做信道估计，用最早的冲激峰当作前导起点。
     /// 信道估计只用 `lowHz...highHz`，探测时是候选频段，数据时是这次选中的频段。
     /// find_symbol 里加回的 10000 点只是因为他们先裁掉了文件开头，这里的下标已经在整段录音上。
@@ -820,9 +835,9 @@ enum OFDMModem {
         highHz: Double
     ) -> Int {
         guard correlation.indices.contains(peakIndex), preamble.count > 1, sampleRate > 0 else { return peakIndex }
-        let threshold = correlation[peakIndex] * 0.4
+        let threshold = correlation[peakIndex] * Float(OFDMConstants.correlationSeekbackRatio)
         var leading = peakIndex
-        let seekFrom = max(0, peakIndex - 960)
+        let seekFrom = max(0, peakIndex - OFDMConstants.symbolLength)
         if threshold > 0 {
             for index in seekFrom...peakIndex where correlation[index] > threshold {
                 leading = index
@@ -900,15 +915,15 @@ enum OFDMModem {
         return earliest + 1
     }
 
-    /// Naiser_check_valid：在相关峰前后 1200 点、步长 8 上算差分相关。
-    /// 得分达到 0.6 才算通过。返回的 start 是得分平台的后沿，供核对；符号起点用 earliestArrival。
+    /// Naiser_check_valid：在相关峰前后按固定窗和步长算差分相关。
+    /// 得分达到门限才算通过。返回的 start 是得分平台的后沿，供核对；符号起点用 earliestArrival。
     static func naiserLock(samples: [Float], peakIndex: Int) -> (start: Int, score: Double)? {
-        let preambleLength = naiserPN.count * (naiserNu + naiserN0)
-        let from = max(0, peakIndex - naiserWindow)
-        let to = min(peakIndex + naiserWindow, samples.count - preambleLength)
+        let preambleLength = naiserPN.count * (OFDMConstants.naiserNu + OFDMConstants.naiserN0)
+        let from = max(0, peakIndex - OFDMConstants.naiserWindow)
+        let to = min(peakIndex + OFDMConstants.naiserWindow, samples.count - preambleLength)
         guard from <= to else { return nil }
         var scores: [(index: Int, score: Double)] = []
-        scores.reserveCapacity((to - from) / naiserStep + 2)
+        scores.reserveCapacity((to - from) / OFDMConstants.naiserStep + 2)
         var index = from
         var bestScore = -Double.infinity
         while index <= to {
@@ -917,9 +932,9 @@ enum OFDMModem {
                 bestScore = score
             }
             scores.append((index, score))
-            index += naiserStep
+            index += OFDMConstants.naiserStep
         }
-        guard bestScore >= naiserThreshold, !scores.isEmpty else { return nil }
+        guard bestScore >= OFDMConstants.naiserThreshold, !scores.isEmpty else { return nil }
         let floor = bestScore * 0.995
         let start = scores.reduce(scores[0].index) { edge, sample in
             sample.score >= floor ? max(edge, sample.index) : edge
@@ -929,18 +944,18 @@ enum OFDMModem {
 
     /// Naiser_corr 的单点：Pd/Rd/(L-1)*L。连续两段同号或反号都按 PN 乘积抵消。
     static func naiserMetric(_ samples: [Float], start: Int) -> Double {
-        let block = naiserNu + naiserN0
+        let block = OFDMConstants.naiserNu + OFDMConstants.naiserN0
         let length = naiserPN.count * block
         guard start >= 0, start + length <= samples.count else { return 0 }
         var matched = 0.0
         var energy = 0.0
         for index in 0..<(naiserPN.count - 1) {
             let sign = Double(naiserPN[index] * naiserPN[index + 1])
-            let first = start + index * block + naiserN0
-            let second = start + (index + 1) * block + naiserN0
+            let first = start + index * block + OFDMConstants.naiserN0
+            let second = start + (index + 1) * block + OFDMConstants.naiserN0
             var dot = 0.0
             var secondEnergy = 0.0
-            for sample in 0..<naiserNu {
+            for sample in 0..<OFDMConstants.naiserNu {
                 let left = Double(samples[first + sample])
                 let right = Double(samples[second + sample])
                 dot += left * right
@@ -949,7 +964,7 @@ enum OFDMModem {
             matched += sign * dot
             if index == 0 {
                 var firstEnergy = 0.0
-                for sample in 0..<naiserNu {
+                for sample in 0..<OFDMConstants.naiserNu {
                     let left = Double(samples[first + sample])
                     firstEnergy += left * left
                 }
@@ -966,7 +981,7 @@ enum OFDMModem {
         let nyquist = sampleRate / 2
         let low = min(max(lowHz - 200, 50), nyquist - 200)
         let high = min(max(highHz, low + 100), nyquist - 50)
-        let order = filterOrder
+        let order = OFDMConstants.filterOrder
         var taps = [Double](repeating: 0, count: order + 1)
         let lowAngle = (low / nyquist) * Double.pi
         let highAngle = (high / nyquist) * Double.pi
@@ -1016,7 +1031,7 @@ enum OFDMModem {
     }
 
     private static func noiseBins(around band: ClosedRange<Int>, nyquist: Int) -> [Int] {
-        let offsets = [-8, -6, -4, 4, 6, 8]
+        let offsets = OFDMConstants.noiseBinOffsets
         var bins: [Int] = []
         for edge in [band.lowerBound, band.upperBound] {
             for offset in offsets {

@@ -174,7 +174,7 @@ final class WatchModel: ObservableObject {
                 log("探测前导播放结束 \(RunLog.timestamp(probeDate))")
                 if !stopRequested {
                     log("等待反馈")
-                    try await Task.sleep(nanoseconds: 3_000_000_000)
+                    try await Task.sleep(nanoseconds: UInt64(OFDMConstants.feedbackListenSeconds * 1_000_000_000))
                 }
                 let heard = player.endRecording()
                 if !stopRequested {

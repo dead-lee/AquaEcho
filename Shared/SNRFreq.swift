@@ -2,9 +2,6 @@ import Foundation
 
 /// watercomms `SNR_freq.calculate_snr`：每个 OFDM bin 的信号功率除以噪声方差，再换成 dB。
 enum SNRFreq {
-    /// 选频门限。超过这个值的 bin 才进入数据频段。
-    static let thresholdDB = 6.0
-
     /// `rxReal[bin][symbol]` 对应 Java 的 `rx_spectrum[0][i][j]`。`mag2db` 是 20·log10，结果再除以 2。
     static func calculateSNR(
         rxReal: [[Double]],
@@ -50,7 +47,7 @@ enum SNRFreq {
     }
 
     /// 超过阈值的最长连续区间。同样长时保留频率更低的那一段。
-    static func longestInterval(_ snr: [Double], thresholdDB: Double = SNRFreq.thresholdDB) -> ClosedRange<Int>? {
+    static func longestInterval(_ snr: [Double], thresholdDB: Double = OFDMConstants.snrSelectThresholdDb) -> ClosedRange<Int>? {
         let count = snr.count
         guard count > 0 else { return nil }
         for length in stride(from: count, through: 1, by: -1) {
@@ -77,8 +74,8 @@ enum SNRFreq {
         sampleRate: Double,
         frequency: FrequencyConfig
     ) -> (fbegin: Double, fend: Double)? {
-        let ns = OFDMModem.naiserNu
-        let gap = OFDMModem.naiserN0
+        let ns = OFDMConstants.naiserNu
+        let gap = OFDMConstants.naiserN0
         let symbols = OFDMModem.naiserPN.count
         let preambleCount = symbols * ns + (symbols - 1) * gap
         guard arrival >= 0, sampleRate > 0, arrival + preambleCount <= samples.count else { return nil }

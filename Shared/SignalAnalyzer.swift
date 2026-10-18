@@ -180,7 +180,7 @@ enum SignalAnalyzer {
                     continue
                 }
                 let lastLag = audio.count - plan.preamble.count
-                let searchEnd = min(lastLag, audio.count - plan.packetSamples + OFDMModem.naiserWindow)
+                let searchEnd = min(lastLag, audio.count - plan.packetSamples + OFDMConstants.naiserWindow)
                 guard searchEnd >= localStart else { return }
                 let candidates = candidateLocals(from: localStart, through: searchEnd, separation: 2_400, symbolLength: plan.ns)
                 if candidates.isEmpty {
@@ -289,7 +289,7 @@ enum SignalAnalyzer {
             if lockedWithoutBand {
                 probeState = .inactive
                 schedule = []
-                queuedLogs.append("选频失败，没有 SNR 超过 6 dB 的连续频段")
+                queuedLogs.append("选频失败，没有 SNR 超过 \(OFDMConstants.snrSelectThresholdDb) dB 的连续频段")
                 searchFrom = emitted + audio.count
                 return
             }
@@ -316,7 +316,7 @@ enum SignalAnalyzer {
             var work = correlation
             var chosen: [Int] = []
             let upper = min(through, work.count - 1)
-            let sharpLimit = symbolLength <= 960 ? 150 : 80
+            let sharpLimit = symbolLength <= OFDMConstants.symbolLength ? 150 : 80
             var inspections = 0
             while chosen.count < 3, inspections < 12 {
                 inspections += 1

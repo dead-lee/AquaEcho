@@ -33,7 +33,7 @@ struct TestConfig: Codable, Equatable {
     var symbolDurationMs: Double = 20
     /// 旧字段。OFDM 发送不再读取。
     var toneDurationMs: Double = 30
-    /// 前导结束后的间隔，对应 watercomms 的 ChirpGap，960 点即 20 ms。
+    /// 旧字段。前导和数据之间的间隔采样数是 OFDMConstants.preambleGapSamples，发送不再读取这项。
     var silenceDurationMs: Double = 20
     /// 循环前缀。1.4 ms 在 48 kHz 下是 67 点。
     var cyclicPrefixMs: Double = 1.4

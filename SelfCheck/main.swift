@@ -116,7 +116,7 @@ let leadSamples = Int((fresh.leadSilenceMs / 1_000 * rate).rounded())
 let trailSamples = Int((fresh.trailSilenceMs / 1_000 * rate).rounded())
 expectEqual(rendered.count, leadSamples + probePlan.packetSamples + trailSamples, "packet length")
 expectEqual(probePlan.preamble.count, 9_360, "naiser3 length")
-expectEqual(probePlan.gap, 960, "chirp gap")
+expectEqual(probePlan.gap, OFDMConstants.preambleGapSamples, "chirp gap")
 var late = [Float](repeating: 0, count: 80_000)
 let lateAt = 70_000
 for (offset, sample) in probePlan.preamble.enumerated() {
@@ -128,12 +128,12 @@ if let peak = lateCorrelation.indices.max(by: { lateCorrelation[$0] < lateCorrel
 } else {
     expect(false, "late preamble correlation")
 }
-expectEqual(probePlan.ns, 960, "symbol length")
+expectEqual(probePlan.ns, OFDMConstants.symbolLength, "symbol length")
 expectEqual(probePlan.cp, 67, "cyclic prefix")
 let preamble = rendered[leadSamples..<(leadSamples + probePlan.preamble.count)]
 let preamblePeak = preamble.map { abs($0) }.max() ?? 0
 expect(abs(Double(preamblePeak) - 0.98) < 0.02, "preamble peak \(preamblePeak)")
-let guardPeak = preamble.dropFirst(960).prefix(240).map { abs($0) }.max() ?? 1
+let guardPeak = preamble.dropFirst(OFDMConstants.naiserNu).prefix(OFDMConstants.naiserN0).map { abs($0) }.max() ?? 1
 expect(guardPeak < 0.001, "naiser guard is silence, peak \(guardPeak)")
 var preambleWithGap = Array(preamble)
 preambleWithGap.append(contentsOf: repeatElement(0, count: probePlan.gap))
@@ -677,7 +677,10 @@ let formula = SNRFreq.calculateSNR(
 )
 expect(abs(formula[0] - 10 * log10(3)) < 1e-6, "calculate_snr \(formula[0])")
 expect(SNRFreq.longestInterval([0, 7, 7, 7, 0, 8, 8]) == 1...3, "longest run keeps the longer interval")
-expect(SNRFreq.longestInterval([6, 6.1]) == 1...1, "threshold is strictly above 6 dB")
+expect(
+    SNRFreq.longestInterval([OFDMConstants.snrSelectThresholdDb, OFDMConstants.snrSelectThresholdDb + 0.1]) == 1...1,
+    "threshold is strictly above the SNR select threshold"
+)
 expect(SNRFreq.longestInterval([1, 2, 3]) == nil, "nothing at or below 6 dB")
 
 let feedbackLow = 1_800.0

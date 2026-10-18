@@ -4,8 +4,6 @@ import Foundation
 enum FeedbackSignal {
     /// `Constants.fbackTime`，毫秒。
     static let feedbackMilliseconds = 200
-    /// `Constants.ChirpGap`。
-    static let chirpGap = 960
     /// `Constants.FEEDBACK_SNR_THRESH`。反馈峰和邻域噪声的 dB 差。
     static let feedbackSNRThresholdDB = 13.0
 
@@ -24,9 +22,9 @@ enum FeedbackSignal {
     static func encodeFeedbackSignal(fbegin: Double, fend: Double, sampleRate: Double) -> [Float] {
         let preamble = NaiserWaveform.samples
         let bodyCount = max(1, Int((Double(feedbackMilliseconds) / 1_000 * sampleRate).rounded()))
-        var signal = [Float](repeating: 0, count: preamble.count + chirpGap + bodyCount)
+        var signal = [Float](repeating: 0, count: preamble.count + OFDMConstants.preambleGapSamples + bodyCount)
         signal.replaceSubrange(0..<preamble.count, with: preamble)
-        let bodyStart = preamble.count + chirpGap
+        let bodyStart = preamble.count + OFDMConstants.preambleGapSamples
         let lows = (fbegin / 10).rounded() * 10
         let highs = (fend / 10).rounded() * 10
         let amplitude = OFDMModem.playbackAmplitude / 2
@@ -82,7 +80,7 @@ enum FeedbackSignal {
                     lowHz: low,
                     highHz: high
                 )
-                let bodyStart = arrival + preamble.count + chirpGap
+                let bodyStart = arrival + preamble.count + OFDMConstants.preambleGapSamples
                 let bodyEnd = bodyStart + bodyCount
                 if bodyStart >= 0, bodyEnd <= audio.count,
                    let decoded = decodeFeedbackSignal(
@@ -211,7 +209,7 @@ enum FeedbackSignal {
 
     /// `extractSignalHelper` 把解析结果收到 `fs/Ns` 的网格上。
     private static func snap(_ band: (fbegin: Double, fend: Double), sampleRate: Double) -> (fbegin: Double, fend: Double)? {
-        let inc = Double(max(1, Int(sampleRate) / OFDMModem.naiserNu))
+        let inc = Double(max(1, Int(sampleRate) / OFDMConstants.naiserNu))
         let fbegin = ceil(band.fbegin / inc) * inc
         let fend = floor(band.fend / inc) * inc
         guard fend >= fbegin else { return nil }
