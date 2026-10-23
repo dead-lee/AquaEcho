@@ -2,11 +2,11 @@ import SwiftUI
 
 @main
 struct AquaEchoApp: App {
-    @StateObject private var model = PhoneModel()
+    @StateObject private var model = ScanModel()
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            ScanRootView()
                 .environmentObject(model)
         }
     }

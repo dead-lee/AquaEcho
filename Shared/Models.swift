@@ -85,6 +85,7 @@ struct WCEnvelope: Codable {
     var packets: [SentPacket]?
     var progress: String?
     var log: String? = nil
+    var scanConfig: ScanRunConfig? = nil
 }
 
 enum WCCodec {

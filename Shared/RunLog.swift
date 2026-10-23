@@ -1,13 +1,14 @@
 import Foundation
 
 /// 开发日志。固定写到 App Documents，文件名 `AquaEcho_Log_yyyyMMdd_HHmmss.txt`。
+/// 追加写文件句柄，避免每行重写整段日志；UI 只拿新增的那一行。
 final class RunLog {
     static let shared = RunLog()
 
     let fileURL: URL
     private let queue = DispatchQueue(label: "AquaEcho.RunLog")
     private var lines: [String] = []
-    private var recentMessages: [(String, Date)] = []
+    private var handle: FileHandle?
     var onAppend: ((String) -> Void)?
 
     private init() {
@@ -20,40 +21,56 @@ final class RunLog {
         fileURL = folder.appendingPathComponent("AquaEcho_Log_\(formatter.string(from: Date())).txt")
     }
 
+    deinit {
+        try? handle?.close()
+    }
+
     func append(_ message: String) {
-        let line = "\(Self.timestamp()) \(message)"
-        let now = Date()
-        let snapshot = queue.sync { () -> String? in
-            recentMessages.removeAll { now.timeIntervalSince($0.1) > 2 }
-            if recentMessages.contains(where: { $0.0 == message }) { return nil }
-            recentMessages.append((message, now))
-            lines.append(line)
-            return lines.joined(separator: "\n") + "\n"
-        }
-        guard let snapshot else { return }
-        queue.async {
-            try? snapshot.write(to: self.fileURL, atomically: true, encoding: .utf8)
-        }
-        if Thread.isMainThread {
-            onAppend?(line)
-        } else {
-            DispatchQueue.main.async { self.onAppend?(line) }
+        let line = "\(Self.timestamp()) \(message)\n"
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.lines.append(line)
+            if self.handle == nil { self.openHandle() }
+            if let data = line.data(using: .utf8) {
+                try? self.handle?.write(contentsOf: data)
+            }
+            DispatchQueue.main.async {
+                self.onAppend?(line)
+            }
         }
     }
 
     func text() -> String {
-        queue.sync { lines.joined(separator: "\n") }
+        queue.sync { lines.joined() }
     }
 
-    /// 清掉内存里的日志，避免下一次写入把已删除的内容写回去。
+    /// 清掉内存和文件，下一次 append 会重新创建文件。
     func discardBufferedLines() {
         queue.sync {
+            try? handle?.close()
+            handle = nil
             lines.removeAll()
-            recentMessages.removeAll()
+            try? FileManager.default.removeItem(at: fileURL)
         }
     }
 
-    static func documentFiles(prefixes: [String] = ["AquaEcho_Log_", "AquaEcho_Results_", "AquaEcho_Recording_"]) -> [URL] {
+    private func openHandle() {
+        let folder = fileURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: fileURL.path) {
+            FileManager.default.createFile(atPath: fileURL.path, contents: nil)
+        }
+        handle = try? FileHandle(forWritingTo: fileURL)
+        handle?.seekToEndOfFile()
+    }
+
+    static func documentFiles(prefixes: [String] = [
+        "AquaEcho_Log_",
+        "AquaEcho_Results_",
+        "AquaEcho_Recording_",
+        "AquaEcho_Scan_",
+        "AquaEcho_ScanLog_"
+    ]) -> [URL] {
         let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         return urls

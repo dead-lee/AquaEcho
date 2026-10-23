@@ -32,7 +32,8 @@ final class TonePlayer {
         let clamped = min(1, max(0, value))
         playbackVolume = clamped
         guard attached else { return }
-        engine.mainMixerNode.outputVolume = clamped
+        // 只保留一级软件增益；混音器保持 1.0，避免把音量平方。
+        engine.mainMixerNode.outputVolume = 1
         player.volume = clamped
     }
 
@@ -52,8 +53,31 @@ final class TonePlayer {
             engine.connect(player, to: engine.mainMixerNode, format: format)
             attached = true
         }
-        engine.mainMixerNode.outputVolume = playbackVolume
+        engine.mainMixerNode.outputVolume = 1
         player.volume = playbackVolume
+        if !engine.isRunning {
+            engine.prepare()
+            try engine.start()
+        }
+        if !player.isPlaying {
+            player.play()
+        }
+    }
+
+    /// 扫描发送只播放、不录音：用 .playback 拿最大输出，不申请麦克风，也不碰输入链。
+    func preparePlaybackOnly() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback, mode: .default, options: [])
+        try session.setActive(true)
+
+        if !attached {
+            let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+            engine.attach(player)
+            engine.connect(player, to: engine.mainMixerNode, format: format)
+            attached = true
+        }
+        engine.mainMixerNode.outputVolume = 1
+        player.volume = 1
         if !engine.isRunning {
             engine.prepare()
             try engine.start()

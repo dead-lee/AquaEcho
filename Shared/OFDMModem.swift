@@ -99,6 +99,44 @@ enum OFDMModem {
         )
     }
 
+    /// 扫描测试用的显式计划：子载波可以是连续的，也可以是任意挑选的非连续集合。
+    /// 前导由调用方提供（扫描模式为空，因为标记音负责同步），间隔也由调用方决定。
+    static func plan(
+        carriers: [Int],
+        sampleRate: Double,
+        ns: Int,
+        cp: Int,
+        preamble: [Float],
+        gap: Int,
+        bitCount: Int
+    ) -> Plan {
+        let nyquist = ns / 2 - 1
+        let bins = carriers.filter { $0 >= 1 && $0 <= nyquist }
+        let lowBin = bins.min() ?? 1
+        let highBin = bins.max() ?? 1
+        let training = trainingBits(count: bins.count)
+        let dataCounts = split(bitCount: max(0, bitCount), carriers: bins.count)
+        let noise = noiseBins(around: lowBin...highBin, nyquist: nyquist)
+        let spacing = sampleRate / Double(ns)
+        let symbolSamples = ns + cp
+        return Plan(
+            sampleRate: sampleRate,
+            ns: ns,
+            cp: cp,
+            gap: gap,
+            preamble: preamble,
+            lowHz: Double(lowBin) * spacing,
+            highHz: Double(highBin + 1) * spacing,
+            coarseHop: max(OFDMConstants.coarseHopMin, Int((OFDMConstants.coarseHopSeconds * sampleRate).rounded())),
+            carriers: bins,
+            noiseBins: noise,
+            trainingBits: training,
+            dataCounts: dataCounts,
+            symbolSamples: symbolSamples,
+            packetSamples: preamble.count + gap + (1 + dataCounts.count) * symbolSamples
+        )
+    }
+
     static func signalSeconds(f0: Double, f1: Double, config: TestConfig) -> Double {
         let plan = plan(f0: f0, f1: f1, config: config, bitCount: ConvolutionalCode.encodedBitCount)
         return Double(plan.packetSamples) / config.normalized.sampleRate
@@ -106,6 +144,11 @@ enum OFDMModem {
 
     static func render(bits: [Bool], f0: Double, f1: Double, config: TestConfig) -> [Float] {
         let plan = plan(f0: f0, f1: f1, config: config, bitCount: bits.count)
+        return render(bits: bits, plan: plan)
+    }
+
+    /// 用显式计划渲染：前导/间隔由计划决定，扫描模式传空前导和 0 间隔。
+    static func render(bits: [Bool], plan: Plan) -> [Float] {
         var output: [Float] = []
         output.reserveCapacity(plan.packetSamples)
         output.append(contentsOf: plan.preamble)
@@ -162,6 +205,11 @@ enum OFDMModem {
             return equalized
         }
         return frequency
+    }
+
+    /// 扫描模式只走频域差分：不碰 128 抽头时域均衡，也不走全局 onLog。
+    static func demodulateFrequencyOnly(window: [Float], symbolStart: Int, plan: Plan) -> Demodulated? {
+        demodulateFrequency(window: window, symbolStart: symbolStart, plan: plan)
     }
 
     /// Decoder_offline.m 在 `differential_based_time = 1` 时用这条通路出比特。

@@ -23,12 +23,12 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate {
 
 @main
 struct AquaEchoWatchApp: App {
-    @StateObject private var model = WatchModel()
+    @StateObject private var model = WatchScanModel()
     @WKApplicationDelegateAdaptor(WatchAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {
-            WatchRootView()
+            WatchScanRootView()
                 .environmentObject(model)
         }
     }
