@@ -11,6 +11,7 @@ final class WatchScanModel: ObservableObject {
     @Published private(set) var progressText = ""
     @Published private(set) var runLabel = "未同步场景"
     @Published private(set) var outputVolume: Float = 0
+    @Published private(set) var foregroundRunning = false
     @Published private(set) var config = ScanRunConfig()
 
     private let player = TonePlayer()
@@ -24,7 +25,9 @@ final class WatchScanModel: ObservableObject {
     init() {
         player.onLog = { [weak self] message in self?.log(message) }
         foreground.onEvent = { [weak self] message in
-            self?.log(message)
+            guard let self else { return }
+            self.log(message)
+            self.foregroundRunning = self.foreground.running
         }
         foreground.onStopSound = { [weak self] reason in
             if reason.hasPrefix("resignedFrontmost") {
@@ -94,9 +97,18 @@ final class WatchScanModel: ObservableObject {
         task = nil
         player.stop()
         foreground.endBecauseUserStoppedOrLeft()
+        foregroundRunning = false
         isRunning = false
         status = "已停止"
         log("停止扫描")
+    }
+
+    /// 扫描完成后保持前台；用户主动结束，或按数码表冠离开时调用。
+    func endForeground() {
+        foreground.endBecauseUserStoppedOrLeft()
+        foregroundRunning = false
+        if !isRunning { status = "已结束前台保持" }
+        log("结束前台保持")
     }
 
     func noteScenePhase(_ phase: ScenePhase) {
@@ -151,9 +163,10 @@ final class WatchScanModel: ObservableObject {
                 }
             }
 
-            status = "扫描完成"
+            status = "扫描完成（前台保持中）"
             progressText = "\(sent)/\(activeSets.count * packets)"
             log("扫描完成 共 \(sent) 包")
+            link.send(WCEnvelope(kind: .finished))
         } catch is CancellationError {
             status = "已停止"
             log("扫描被取消")
@@ -163,18 +176,29 @@ final class WatchScanModel: ObservableObject {
         }
 
         player.stop()
-        foreground.endBecauseUserStoppedOrLeft()
         isRunning = false
         task = nil
+        foregroundRunning = foreground.running
         refreshOutputVolume()
     }
 
     private func handle(_ envelope: WCEnvelope) {
-        if envelope.kind == .config, let scan = envelope.scanConfig {
+        if (envelope.kind == .config || envelope.kind == .startScan), let scan = envelope.scanConfig {
             config = scan.normalized
             runLabel = config.label
-            status = "已同步：\(config.scenario.title)"
-            log("收到手机配置 \(config.label)")
+            log("收到手机\(envelope.kind == .startScan ? "开始指令" : "配置") \(config.label)")
+            if envelope.kind == .startScan {
+                start()
+            } else {
+                status = "已同步：\(config.scenario.title)"
+            }
+            return
+        }
+        if envelope.kind == .startScan {
+            start()
+            return
+        }
+        if envelope.kind == .config || envelope.kind == .finished {
             return
         }
         if envelope.kind == .log, let line = envelope.log {

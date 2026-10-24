@@ -2,6 +2,8 @@ import Foundation
 
 enum WCKind: String, Codable {
     case config
+    case startScan
+    case finished
     case log
 }
 

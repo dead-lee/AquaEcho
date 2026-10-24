@@ -33,9 +33,9 @@ struct WatchScanRootView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("系统音量 \(Int((model.outputVolume * 100).rounded()))%")
+                Text("前台保持 \(model.foregroundRunning ? "中" : "否") · 系统音量 \(Int((model.outputVolume * 100).rounded()))%")
                     .font(.caption2)
-                    .foregroundStyle(model.outputVolume < 0.95 ? .orange : .secondary)
+                    .foregroundStyle(model.foregroundRunning ? .green : .secondary)
                 if model.outputVolume < 0.95 {
                     Text("音量不足，请先把系统音量调大")
                         .font(.caption2)
@@ -53,9 +53,15 @@ struct WatchScanRootView: View {
                         model.start()
                     }
                     .buttonStyle(.borderedProminent)
+                    if model.foregroundRunning {
+                        Button("结束前台保持") {
+                            model.endForeground()
+                        }
+                        .font(.caption2)
+                    }
                 }
 
-                Text("开始后有 3 秒准备时间；发送结束前请保持手表在水里/测试位置。")
+                Text("先在 iPhone 上点“开始录音”；手机会同时请求手表开始扫描。开始后有 3 秒准备时间；发送结束前请保持手表在水里/测试位置。手表只播放，不录音。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -63,6 +69,7 @@ struct WatchScanRootView: View {
             .padding(.vertical, 2)
         }
         .onAppear {
+            model.noteScenePhase(scenePhase)
             model.refreshOutputVolume()
         }
         .onChange(of: scenePhase) { _, phase in

@@ -112,12 +112,14 @@ final class ScanModel: ObservableObject {
 
         isRecording = true
         startedAt = Date()
-        status = "录音中。请在手表上点“开始扫描”，然后把它放到测试位置。"
         UIApplication.shared.isIdleTimerDisabled = true
         log("开始录音 \(config.label) 集合=\(config.activeSets.map(\.id).joined(separator: ",")) 预计包=\(expectedPackets) 预计=\(String(format: "%.1f", expectedSeconds))s 构建=\(AppBuild.number)")
 
-        let sent = link.send(WCEnvelope(kind: .config, scanConfig: config))
-        log(sent ? "已向手表发送场景配置（手表日志会记录是否收到）" : "手表当前不可达；场景标签只记录在手机端，手表仍按自己的设置发送")
+        let sent = link.send(WCEnvelope(kind: .startScan, scanConfig: config))
+        status = sent
+            ? "录音中。手机已请求手表开始扫描；把两台设备放到测试位置。"
+            : "录音中。手表不可达，请在手表的 AquaEcho 上手动点开始扫描。"
+        log(sent ? "已请求手表开始扫描（手表日志会记录收到）" : "手表不可达：请在手表的 AquaEcho 上手动点开始扫描")
 
         maxTask?.cancel()
         maxTask = Task { @MainActor [weak self] in
@@ -132,7 +134,7 @@ final class ScanModel: ObservableObject {
         guard isRecording else { return }
         isRecording = false
         isAnalyzing = true
-        status = "分析中…"
+        status = "正在保存录音并分析…"
         maxTask?.cancel()
         maxTask = nil
         capture.onSamples = nil
@@ -153,16 +155,27 @@ final class ScanModel: ObservableObject {
         log("停止录音 样本=\(samples.count) 采样率=\(Int(rate.rounded())) 场景=\(config.scenario.title)")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // 先落盘 WAV：即使后续分析失败，原始录音也一定保留。
+            let wav = try? SessionRecording.write(
+                samples: samples,
+                sampleRate: rate,
+                prefix: "AquaEcho_Scan_\(config.scenario.fileTag)_"
+            )
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.wavURL = wav
+                if let wav {
+                    self.log("录音已写入 \(wav.lastPathComponent)（\(samples.count) 样本）")
+                } else {
+                    self.log("错误 WAV 写入失败")
+                }
+            }
+
             let analysis = ScanAnalyzer.analyze(
                 samples: samples,
                 sampleRate: rate,
                 config: config,
                 startedAt: started
-            )
-            let wav = try? SessionRecording.write(
-                samples: samples,
-                sampleRate: rate,
-                prefix: "AquaEcho_Scan_\(config.scenario.fileTag)_"
             )
             let csv = try? ScanCSVExporter.write(analysis)
             let scanLog = try? ScanCSVExporter.writeLog(analysis)
@@ -209,15 +222,18 @@ final class ScanModel: ObservableObject {
 
     private func handle(_ envelope: WCEnvelope) {
         switch envelope.kind {
+        case .finished:
+            if isRecording {
+                log("收到手表扫描完成消息，自动停止并分析")
+                stopAndAnalyze()
+            }
         case .log:
             if let line = envelope.log {
                 for part in line.split(separator: "\n", omittingEmptySubsequences: true) {
                     RunLog.shared.append(String(part))
                 }
             }
-        case .config:
-            break
-        default:
+        case .config, .startScan:
             break
         }
     }

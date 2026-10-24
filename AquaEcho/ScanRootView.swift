@@ -83,22 +83,6 @@ private struct ScanSetupView: View {
                 }
 
                 Section {
-                    if model.isRecording {
-                        Button("停止并分析", role: .destructive) {
-                            model.stopAndAnalyze()
-                        }
-                    } else {
-                        Button("开始录音") {
-                            Task { await model.startRecording() }
-                        }
-                        .disabled(model.isAnalyzing)
-                    }
-                    if model.isAnalyzing {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                            Text("分析中…")
-                        }
-                    }
                     Text(model.status)
                         .font(.footnote)
                     if let started = model.startedAt, model.isRecording {
@@ -110,9 +94,39 @@ private struct ScanSetupView: View {
                         Text(error).foregroundStyle(.red).font(.footnote)
                     }
                     LabeledContent("手表", value: model.reachable ? "已连接" : (model.activated ? "未打开" : "会话未激活"))
+                    Text("点底部按钮开始；手机会请求手表同时开始扫描。停止后会先保存 WAV，再离线分析。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("AquaEcho 扫描")
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 6) {
+                    if model.isRecording {
+                        Button("停止并分析（保存 WAV）", role: .destructive) {
+                            model.stopAndAnalyze()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                    } else {
+                        Button("开始录音（手表也会开始）") {
+                            Task { await model.startRecording() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(model.isAnalyzing)
+                    }
+                    if model.isAnalyzing {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                            Text("正在保存并分析…").font(.caption)
+                        }
+                    }
+                }
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(.bar)
+            }
         }
     }
 
