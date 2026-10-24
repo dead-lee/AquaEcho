@@ -3,7 +3,7 @@ import Foundation
 import SwiftUI
 import UIKit
 
-/// 录音缓冲。音频回调在非主线程，只做加锁追加；分析在停止后离线进行。
+/// 录音缓冲。音频回调在非主线程，只做加锁追加；实时解码由 ScanReceiver 负责。
 final class PCMBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var samples: [Float] = []
@@ -49,6 +49,8 @@ final class PhoneModel: ObservableObject {
     private let capture = AudioCapture()
     private let buffer = PCMBuffer()
     private let link = PhoneLink()
+    private let demodQueue = DispatchQueue(label: "aquaecho.scan.receiver")
+    private var receiver: ScanReceiver?
     private var maxTask: Task<Void, Never>?
 
     init() {
@@ -119,21 +121,35 @@ final class PhoneModel: ObservableObject {
         }
 
         buffer.reset()
+        let started = Date()
+        let receiver = ScanReceiver(config: config, startedAt: started)
+        receiver.onUpdate = { [weak self] analysis in
+            Task { @MainActor in self?.applyLive(analysis) }
+        }
+        receiver.onLog = { line in
+            RunLog.shared.append("[Scan] \(line)")
+        }
+        self.receiver = receiver
         let buffer = self.buffer
-        capture.onSamples = { chunk, _, rate in
+        let demodQueue = self.demodQueue
+        capture.onSamples = { chunk, date, rate in
             buffer.append(chunk, rate: rate)
+            demodQueue.async {
+                receiver.ingest(chunk, at: date, sampleRate: rate)
+            }
         }
         do {
             try capture.start()
         } catch {
             capture.onSamples = nil
+            self.receiver = nil
             lastError = error.localizedDescription
             log("错误 \(error.localizedDescription)")
             return
         }
 
         isRecording = true
-        startedAt = Date()
+        startedAt = started
         UIApplication.shared.isIdleTimerDisabled = true
         log("开始录音 \(config.label) 集合=\(config.activeSets.map(\.id).joined(separator: ",")) 预计包=\(expectedPackets) 预计=\(String(format: "%.1f", expectedSeconds))s 构建=\(AppBuild.number)")
 
@@ -147,7 +163,7 @@ final class PhoneModel: ObservableObject {
         maxTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 600_000_000_000)
             guard let self, self.isRecording else { return }
-            self.log("达到最长录音时间，自动停止并分析")
+            self.log("达到最长录音时间，自动停止")
             self.stopAndAnalyze()
         }
     }
@@ -156,7 +172,7 @@ final class PhoneModel: ObservableObject {
         guard isRecording else { return }
         isRecording = false
         isAnalyzing = true
-        status = "正在保存录音并分析…"
+        status = "正在保存录音…"
         maxTask?.cancel()
         maxTask = nil
         capture.onSamples = nil
@@ -166,6 +182,9 @@ final class PhoneModel: ObservableObject {
         let (samples, rate) = buffer.snapshot()
         let started = startedAt ?? Date()
         let config = self.config
+        let final = demodQueue.sync { [receiver] in receiver?.finish() }
+        self.receiver = nil
+
         guard !samples.isEmpty else {
             isAnalyzing = false
             lastError = "没有录到样本。"
@@ -175,52 +194,52 @@ final class PhoneModel: ObservableObject {
         }
 
         log("停止录音 样本=\(samples.count) 采样率=\(Int(rate.rounded())) 场景=\(config.scenario.title)")
+        let analysis = final ?? ScanResultBuilder.build(
+            config: config,
+            results: [:],
+            startedAt: started,
+            finishedAt: Date(),
+            sampleRate: rate,
+            corruptEvents: 0
+        )
+        self.analysis = analysis
+        self.status = "完成：\(analysis.overallPassed)/\(analysis.overallPackets) 通过（\(String(format: "%.1f", analysis.overallRate * 100))%）"
+        for line in analysis.logLines {
+            RunLog.shared.append("[Scan] \(line)")
+        }
+        log("实时解码结束 通过=\(analysis.overallPassed)/\(analysis.overallPackets) 成功率=\(String(format: "%.1f", analysis.overallRate * 100))%")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            // 先落盘 WAV：即使后续分析失败，原始录音也一定保留。
             let wav = try? SessionRecording.write(
                 samples: samples,
                 sampleRate: rate,
                 prefix: "AquaEcho_Scan_\(config.scenario.fileTag)_"
             )
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.wavURL = wav
-                if let wav {
-                    self.log("录音已写入 \(wav.lastPathComponent)（\(samples.count) 样本）")
-                } else {
-                    self.log("错误 WAV 写入失败")
-                }
-            }
-
-            let analysis = ScanAnalyzer.analyze(
-                samples: samples,
-                sampleRate: rate,
-                config: config,
-                startedAt: started
-            )
             let csv = try? ScanCSVExporter.write(analysis)
             let scanLog = try? ScanCSVExporter.writeLog(analysis)
-
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.analysis = analysis
                 self.wavURL = wav
                 self.csvURL = csv
                 self.scanLogURL = scanLog
                 self.isAnalyzing = false
-                self.status = "完成：\(analysis.overallPassed)/\(analysis.overallPackets) 通过（\(String(format: "%.1f", analysis.overallRate * 100))%）"
-                for line in analysis.logLines {
-                    RunLog.shared.append("[Scan] \(line)")
+                if let wav {
+                    self.log("录音已写入 \(wav.lastPathComponent)（\(samples.count) 样本）")
                 }
-                self.log("分析完成 \(config.label) 通过=\(analysis.overallPassed)/\(analysis.overallPackets) 成功率=\(String(format: "%.1f", analysis.overallRate * 100))% WAV=\(wav?.lastPathComponent ?? "无") CSV=\(csv?.lastPathComponent ?? "无")")
+                self.log("结果已写入 CSV=\(csv?.lastPathComponent ?? "无") 日志=\(scanLog?.lastPathComponent ?? "无")")
             }
         }
     }
 
+    private func applyLive(_ analysis: ScanAnalysis) {
+        guard isRecording else { return }
+        self.analysis = analysis
+        status = "录音中：已解 \(analysis.overallPassed)/\(analysis.overallPackets)（\(String(format: "%.1f", analysis.overallRate * 100))%）"
+    }
+
     func noteScenePhase(_ phase: ScenePhase) {
         guard phase == .background, isRecording else { return }
-        log("App 进入后台，录音可能被系统中断，自动停止并分析")
+        log("App 进入后台，录音可能被系统中断，自动停止")
         stopAndAnalyze()
     }
 

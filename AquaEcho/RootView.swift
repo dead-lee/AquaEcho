@@ -105,7 +105,7 @@ private struct TestScreen: View {
                         .controlSize(.large)
                         .disabled(model.isAnalyzing)
                     }
-                    Text("手机会请求手表同时开始扫描；停止后先保存 WAV，再离线分析。")
+                    Text("手机会请求手表同时开始扫描；标记音到达后实时解码，结果随包更新。停止后保存 WAV/CSV。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -175,7 +175,7 @@ private struct ResultsScreen: View {
                     ContentUnavailableView(
                         "还没有结果",
                         systemImage: "chart.bar",
-                        description: Text("在“测试”页开始，手机会同时启动手表；停止或收到手表完成消息后自动分析。")
+                        description: Text("在“测试”页开始，手机会同时启动手表；每个包解出后结果会立即出现在这里。")
                     )
                 }
             }
