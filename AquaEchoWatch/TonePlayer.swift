@@ -13,58 +13,18 @@ enum TonePlayerError: LocalizedError {
     }
 }
 
-/// 以满幅把 48 kHz 单声道缓冲送到手表扬声器。前导静音之后的时刻记为发送时间。
+/// 手表端只播放：最大系统音量，不录音、不做反馈。
 final class TonePlayer {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var attached = false
-    private var inputTap = false
-    private var recorded: SampleBox?
     private let sampleRate: Double = 48_000
     private let playbackLock = NSLock()
     private var playbackDone: CheckedContinuation<Void, Never>?
-    private var playbackVolume: Float = 1
     var onLog: ((String) -> Void)?
 
     var outputVolume: Float { AVAudioSession.sharedInstance().outputVolume }
 
-    func setPlaybackVolume(_ value: Float) {
-        let clamped = min(1, max(0, value))
-        playbackVolume = clamped
-        guard attached else { return }
-        // 只保留一级软件增益；混音器保持 1.0，避免把音量平方。
-        engine.mainMixerNode.outputVolume = 1
-        player.volume = clamped
-    }
-
-    func prepare() throws {
-        let session = AVAudioSession.sharedInstance()
-        // longFormAudio 只允许和 playback 一起用，配 playAndRecord 会返回参数错误 -50。
-        do {
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [])
-        } catch {
-            try session.setCategory(.playAndRecord, mode: .default, options: [])
-        }
-        try session.setActive(true)
-
-        if !attached {
-            let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
-            engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: format)
-            attached = true
-        }
-        engine.mainMixerNode.outputVolume = 1
-        player.volume = playbackVolume
-        if !engine.isRunning {
-            engine.prepare()
-            try engine.start()
-        }
-        if !player.isPlaying {
-            player.play()
-        }
-    }
-
-    /// 扫描发送只播放、不录音：用 .playback 拿最大输出，不申请麦克风，也不碰输入链。
     func preparePlaybackOnly() throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback, mode: .default, options: [])
@@ -87,45 +47,10 @@ final class TonePlayer {
         }
     }
 
-    func beginRecording() throws -> Double {
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            throw TonePlayerError.buffer
-        }
-        recorded = SampleBox()
-        input.installTap(onBus: 0, bufferSize: 4_096, format: format) { [weak self] buffer, _ in
-            let frames = Int(buffer.frameLength)
-            guard frames > 0, let channel = buffer.floatChannelData?[0] else { return }
-            self?.recorded?.append(Array(UnsafeBufferPointer(start: channel, count: frames)))
-        }
-        inputTap = true
-        if !engine.isRunning {
-            try engine.start()
-        }
-        return format.sampleRate
-    }
-
-    func endRecording() -> [Float] {
-        let samples = recorded?.samples ?? []
-        recorded = nil
-        finishRecording()
-        return samples
-    }
-
-    func stop() {
-        finishRecording()
-        recorded = nil
-        player.stop()
-        engine.stop()
-        finishPlayback()
-        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
-    }
-
     func play(samples: [Float], leadSamples: Int) async throws -> Date {
         guard !samples.isEmpty else { throw TonePlayerError.empty }
         if !engine.isRunning {
-            try prepare()
+            try preparePlaybackOnly()
         }
         let buffer = try playbackBuffer(sampleCount: samples.count)
         guard let channel = buffer.floatChannelData?[0] else {
@@ -155,11 +80,18 @@ final class TonePlayer {
         return clock.date
     }
 
+    func stop() {
+        player.stop()
+        engine.stop()
+        finishPlayback()
+        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    }
+
     private func playbackBuffer(sampleCount: Int) throws -> AVAudioPCMBuffer {
         if let buffer = makePlaybackBuffer(sampleCount: sampleCount) {
             return buffer
         }
-        try prepare()
+        try preparePlaybackOnly()
         if let buffer = makePlaybackBuffer(sampleCount: sampleCount) {
             return buffer
         }
@@ -177,12 +109,6 @@ final class TonePlayer {
         return buffer
     }
 
-    private func finishRecording() {
-        guard inputTap else { return }
-        inputTap = false
-        engine.inputNode.removeTap(onBus: 0)
-    }
-
     private func finishPlayback() {
         playbackLock.lock()
         let continuation = playbackDone
@@ -194,22 +120,4 @@ final class TonePlayer {
 
 private final class SendClock: @unchecked Sendable {
     var date = Date()
-}
-
-private final class SampleBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: [Float] = []
-
-    func append(_ samples: [Float]) {
-        lock.lock()
-        stored.append(contentsOf: samples)
-        lock.unlock()
-    }
-
-    var samples: [Float] {
-        lock.lock()
-        let copy = stored
-        lock.unlock()
-        return copy
-    }
 }

@@ -1,91 +1,16 @@
 import Foundation
 
-struct SentPacket: Codable, Equatable, Identifiable {
-    var sequence: Int
-    var repeatIndex: Int
-    var lowHz: Double
-    var highHz: Double
-    var payloadHex: String
-    /// Watch 本地时钟，Unix 秒。
-    var watchSendTimestamp: TimeInterval
-
-    var id: Int { sequence }
-
-    var watchSendDate: Date { Date(timeIntervalSince1970: watchSendTimestamp) }
-}
-
-struct Transmission: Equatable, Identifiable {
-    var packet: SentPacket
-    var phoneReceiveDate: Date?
-    /// closeBurst 结束时的绝对时间。
-    var demodEndDate: Date?
-    var packetSNRdB: Double
-    var packetRatioDB: Double
-    var detected: Bool
-    /// 纠错后的 8 字节与发送载荷逐字节一致。
-    var passed: Bool
-    var decodedLowHz: Double?
-    var decodedHighHz: Double?
-    var decodedSequence: Int?
-    var errorCorrected: Bool
-
-    var id: Int { packet.sequence }
-}
-
-struct ScoreBreakdown: Equatable {
-    var snr: Int
-    var separation: Int
-    var passRate: Int
-
-    var total: Int { snr + separation + passRate }
-}
-
-struct PairScore: Equatable, Identifiable {
-    var mode: TestMode
-    var lowHz: Double
-    var highHz: Double
-    var meanSNRdB: Double
-    var ratioDB: Double
-    /// 0...1。载荷完全一致的包数 / 该频率对的总包数。
-    var passRate: Double
-    var score: ScoreBreakdown
-    var transmissions: [Transmission]
-
-    var id: String { "\(mode.rawValue)-\(lowHz)-\(highHz)" }
-    var label: String { "\(HzFormat.string(lowHz)) / \(HzFormat.string(highHz)) Hz" }
-    var isRecommended: Bool { score.total >= 80 }
-}
-
-struct CaptureBuffer {
-    var samples: [Float]
-    var sampleRate: Double
-    var startedAt: Date
-
-    func date(forSample index: Int) -> Date {
-        let safeRate = max(sampleRate, 1)
-        return startedAt.addingTimeInterval(Double(max(0, index)) / safeRate)
-    }
-}
-
 enum WCKind: String, Codable {
     case config
-    case start
-    case requestStart
-    case stop
-    case progress
-    case packet
-    case finished
     case log
 }
 
+/// WatchConnectivity 只承载两件事：水面同步场景配置、回传手表日志。
+/// 声波数据不经过这里。
 struct WCEnvelope: Codable {
     var kind: WCKind
-    var config: TestConfig?
-    var packet: SentPacket?
-    var packets: [SentPacket]?
-    var progress: String?
-    var log: String? = nil
     var scanConfig: ScanRunConfig? = nil
+    var log: String? = nil
 }
 
 enum WCCodec {

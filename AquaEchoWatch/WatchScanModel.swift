@@ -198,11 +198,18 @@ final class WatchScanModel: ObservableObject {
         // 单条 WatchConnectivity 消息有大小上限；按约 8 KB 分块发送。
         while !remaining.isEmpty {
             let chunk = String(remaining.prefix(8_000))
-            guard link.send(WCEnvelope(kind: .log, config: nil, packet: nil, packets: nil, progress: nil, log: chunk)) else {
+            guard link.send(WCEnvelope(kind: .log, log: chunk)) else {
                 return
             }
             remaining = remaining.dropFirst(chunk.count)
         }
         pendingLogs.removeAll()
     }
+}
+
+@MainActor
+enum WatchActivation {
+    static var onDidBecomeActive: (() -> Void)?
+    static var onWillResignActive: (() -> Void)?
+    static var onDidEnterBackground: (() -> Void)?
 }

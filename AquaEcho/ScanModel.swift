@@ -116,15 +116,8 @@ final class ScanModel: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = true
         log("开始录音 \(config.label) 集合=\(config.activeSets.map(\.id).joined(separator: ",")) 预计包=\(expectedPackets) 预计=\(String(format: "%.1f", expectedSeconds))s 构建=\(AppBuild.number)")
 
-        let sent = link.send(WCEnvelope(
-            kind: .config,
-            config: nil,
-            packet: nil,
-            packets: nil,
-            progress: nil,
-            scanConfig: config
-        ))
-        log(sent ? "已向手表同步场景配置" : "手表当前不可达；场景标签只记录在手机端，手表仍按自己的设置发送")
+        let sent = link.send(WCEnvelope(kind: .config, scanConfig: config))
+        log(sent ? "已向手表发送场景配置（手表日志会记录是否收到）" : "手表当前不可达；场景标签只记录在手机端，手表仍按自己的设置发送")
 
         maxTask?.cancel()
         maxTask = Task { @MainActor [weak self] in
