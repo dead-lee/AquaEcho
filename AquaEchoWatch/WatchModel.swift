@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import SwiftUI
+import WatchKit
 
 /// 手表端扫描发送器：只播放，不录音、不做反馈、不握手。
 /// 序列固定为“集合列表 × 每组包数”，每包 = 标记音 + 保护间隔 + OFDM 数据。
@@ -81,6 +82,7 @@ final class WatchModel: ObservableObject {
         status = "准备播放"
         progressText = "0/\(totalPackets)"
         refreshOutputVolume()
+        WKExtension.shared().isFrontmostTimeoutExtended = true
         foreground.setAllowedToStart(true)
         foreground.ensureRunning()
 
@@ -103,6 +105,7 @@ final class WatchModel: ObservableObject {
         task?.cancel()
         task = nil
         player.stop()
+        WKExtension.shared().isFrontmostTimeoutExtended = false
         foreground.endBecauseUserStoppedOrLeft()
         foregroundRunning = false
         isRunning = false
@@ -112,6 +115,7 @@ final class WatchModel: ObservableObject {
 
     /// 扫描完成后保持前台；用户主动结束，或按数码表冠离开时调用。
     func endForeground() {
+        WKExtension.shared().isFrontmostTimeoutExtended = false
         foreground.endBecauseUserStoppedOrLeft()
         foregroundRunning = false
         if !isRunning { status = "已结束前台保持" }

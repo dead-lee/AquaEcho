@@ -38,13 +38,13 @@ struct SpectralSet: Identifiable, Equatable, Codable {
     var code: Int { SpectralSet.all.firstIndex(where: { $0.id == id }) ?? 0 }
 
     static let all: [SpectralSet] = [
-        SpectralSet(id: "S0", title: "S0 · 0.5–1.5 kHz", lowHz: 500, highHz: 1_500, markerHz: 600, chirpLowHz: 500, chirpHighHz: 1_500),
-        SpectralSet(id: "S1", title: "S1 · 1.0–2.5 kHz", lowHz: 1_000, highHz: 2_500, markerHz: 1_100, chirpLowHz: 1_000, chirpHighHz: 2_500),
-        SpectralSet(id: "S2", title: "S2 · 2.0–4.0 kHz", lowHz: 2_000, highHz: 4_000, markerHz: 2_100, chirpLowHz: 2_000, chirpHighHz: 4_000),
-        SpectralSet(id: "S3", title: "S3 · 4.0–8.0 kHz", lowHz: 4_000, highHz: 8_000, markerHz: 4_100, chirpLowHz: 4_000, chirpHighHz: 8_000),
-        SpectralSet(id: "S4", title: "S4 · 0.5–4.0 kHz", lowHz: 500, highHz: 4_000, markerHz: 700, chirpLowHz: 500, chirpHighHz: 4_000),
-        SpectralSet(id: "S5", title: "S5 · 0.5–8.0 kHz", lowHz: 500, highHz: 8_000, markerHz: 800, chirpLowHz: 500, chirpHighHz: 8_000),
-        SpectralSet(id: "S6", title: "S6 · 0.5–3.0 kHz", lowHz: 500, highHz: 3_000, markerHz: 900, chirpLowHz: 500, chirpHighHz: 3_000)
+        SpectralSet(id: "S0", title: "S0 · 0.5–1.5 kHz", lowHz: 500, highHz: 1_500, markerHz: 400, chirpLowHz: 500, chirpHighHz: 1_500),
+        SpectralSet(id: "S1", title: "S1 · 1.0–2.5 kHz", lowHz: 1_000, highHz: 2_500, markerHz: 400, chirpLowHz: 1_000, chirpHighHz: 2_500),
+        SpectralSet(id: "S2", title: "S2 · 2.0–4.0 kHz", lowHz: 2_000, highHz: 4_000, markerHz: 400, chirpLowHz: 2_000, chirpHighHz: 4_000),
+        SpectralSet(id: "S3", title: "S3 · 4.0–8.0 kHz", lowHz: 4_000, highHz: 8_000, markerHz: 400, chirpLowHz: 4_000, chirpHighHz: 8_000),
+        SpectralSet(id: "S4", title: "S4 · 0.5–4.0 kHz", lowHz: 500, highHz: 4_000, markerHz: 400, chirpLowHz: 500, chirpHighHz: 4_000),
+        SpectralSet(id: "S5", title: "S5 · 0.5–8.0 kHz", lowHz: 500, highHz: 8_000, markerHz: 400, chirpLowHz: 500, chirpHighHz: 8_000),
+        SpectralSet(id: "S6", title: "S6 · 0.5–3.0 kHz", lowHz: 500, highHz: 3_000, markerHz: 400, chirpLowHz: 500, chirpHighHz: 3_000)
     ]
 
     static let defaultIDs: [String] = all.map(\.id)

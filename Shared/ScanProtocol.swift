@@ -12,6 +12,7 @@ enum ScanProtocol {
     static let symbolSamples = symbolLength + cyclicPrefix
 
     static let markerMs: Double = 30
+    static let markerHz: Double = 400
     static let guardMs: Double = 10
     static let tailMs: Double = 20
 
@@ -53,7 +54,7 @@ enum ScanProtocol {
     }
 
     static func makeFrame(payload: UInt64, set: SpectralSet) -> [Float] {
-        let marker = tone(frequency: set.markerHz, durationMs: markerMs, amplitude: 0.85)
+        let marker = tone(frequency: ScanProtocol.markerHz, durationMs: markerMs, amplitude: 0.85)
         let guardGap = [Float](repeating: 0, count: Self.guardSamples)
         let bits = PacketLayout.bits(for: PacketLayout.data(from: payload))
         let coded = ConvolutionalCode.encode(bits)

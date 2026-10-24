@@ -1,10 +1,8 @@
 import Foundation
 
-/// 离线扫描分析器：录音结束后一次性处理，不依赖实时同步。
-/// 1. 在整段录音里找每个集合的标记音（30 ms 单音），得到帧起点和集合；
-/// 2. 从帧起点后 40 ms 开始，用该集合的子载波做差分 OFDM 解调；
-/// 3. 维特比译码后按 (集合号, 包序号) 重建期望 64 bit，逐 bit 比对；
-/// 4. 按集合/包补齐缺失行，输出成功率和每包日志。
+/// 离线扫描分析器：录音结束后一次性处理。
+/// 标记音是所有集合共用的 400 Hz 控制音，位于数据频段之外；
+/// 手机只扫这一路标记音，再用载荷里的集合号逐一尝试解调。
 enum ScanAnalyzer {
     static func analyze(
         samples: [Float],
@@ -21,42 +19,59 @@ enum ScanAnalyzer {
         var logs: [String] = []
         logs.append("分析开始 \(normalized.label) 集合=\(sets.map(\.id).joined(separator: ",")) 每组=\(packetsPerSet) 输入采样率=\(Int(sampleRate.rounded())) 分析采样率=\(Int(rate)) 样本=\(samples.count)")
 
-        let events = markerEvents(audio: audio, sets: sets, sampleRate: rate)
-        logs.append("标记音事件=\(events.count)")
+        var events = markerEvents(audio: audio, sampleRate: rate, thresholdFactor: 5000)
+        let expectedTotal = sets.count * packetsPerSet
+        if events.count < expectedTotal / 2 {
+            logs.append("标记音偏少（\(events.count)/\(expectedTotal)），降低门限重试")
+            events = markerEvents(audio: audio, sampleRate: rate, thresholdFactor: 1000)
+        }
+        logs.append("标记音事件=\(events.count) 标记频率=\(Int(ScanProtocol.markerHz))Hz")
 
         var byKey: [String: (word: UInt64, snr: Double, marker: Double, sample: Int)] = [:]
-        var corruptBySet: [String: Int] = [:]
         var corruptEvents = 0
 
+        var expectedSetIndex = 0
         for event in events {
-            let set = event.set
-            let plan = ScanProtocol.plan(for: set)
-            let base = event.startSample + ScanProtocol.dataStartOffset
-            let attempt = decode(audio: audio, dataStart: base, plan: plan, set: set, packets: packetsPerSet)
+            var matched: (set: SpectralSet, word: UInt64, packet: Int, snr: Double, offset: Int)?
+            var candidates = [sets[expectedSetIndex]]
+            for (index, set) in sets.enumerated() where index != expectedSetIndex {
+                candidates.append(set)
+            }
+            for set in candidates {
+                let plan = ScanProtocol.plan(for: set)
+                let base = event.startSample + ScanProtocol.dataStartOffset
+                if let hit = decode(audio: audio, dataStart: base, plan: plan, set: set, packets: packetsPerSet), hit.valid {
+                    matched = (set, hit.word, hit.packetIndex, hit.snrDB, hit.offset)
+                    break
+                }
+            }
 
-            if let attempt, attempt.valid {
-                let key = "\(set.id)#\(attempt.packetIndex)"
+            if let matched {
+                let key = "\(matched.set.id)#\(matched.packet)"
                 let previous = byKey[key]
-                if previous == nil || attempt.snrDB > previous!.snr {
-                    byKey[key] = (attempt.word, attempt.snrDB, event.snrDB, event.startSample)
+                if previous == nil || matched.snr > previous!.snr {
+                    byKey[key] = (matched.word, matched.snr, event.snrDB, event.startSample)
                 }
                 logs.append(String(
                     format: "事件 集合=%@ 起始样本=%d 标记SNR=%.1fdB 解出=%@ 包=%d 通过=是 数据SNR=%.1fdB 偏移=%d",
                     locale: Locale(identifier: "en_US_POSIX"),
-                    set.id, event.startSample, event.snrDB,
-                    ScanPayload.hex(attempt.word), attempt.packetIndex,
-                    attempt.snrDB, attempt.offset
+                    matched.set.id, event.startSample, event.snrDB,
+                    ScanPayload.hex(matched.word), matched.packet, matched.snr, matched.offset
                 ))
+                if let index = sets.firstIndex(where: { $0.id == matched.set.id }) {
+                    let nextPacket = matched.packet + 1
+                    if nextPacket < packetsPerSet {
+                        expectedSetIndex = index
+                    } else {
+                        expectedSetIndex = (index + 1) % sets.count
+                    }
+                }
             } else {
                 corruptEvents += 1
-                corruptBySet[set.id, default: 0] += 1
-                let word = attempt?.word ?? 0
-                let snr = attempt?.snrDB ?? 0
                 logs.append(String(
-                    format: "伪包/失败 集合=%@ 起始样本=%d 标记SNR=%.1fdB 解出=%@ 数据SNR=%.1fdB 说明=未通过自校验",
+                    format: "未匹配 起始样本=%d 标记SNR=%.1fdB 说明=所有集合都没通过自校验",
                     locale: Locale(identifier: "en_US_POSIX"),
-                    set.id, event.startSample, event.snrDB,
-                    ScanPayload.hex(word), snr
+                    event.startSample, event.snrDB
                 ))
             }
         }
@@ -119,14 +134,14 @@ enum ScanAnalyzer {
                 meanSNRDB: mean(detectedRows.map { $0.snrDB }),
                 meanMarkerSNRDB: mean(detectedRows.map { $0.markerSNRDB }),
                 airtimeMs: set.airtimeMs,
-                corrupt: corruptBySet[set.id] ?? 0
+                corrupt: 0
             ))
             logs.append(String(
-                format: "汇总 集合=%@ 通过=%d/%d 成功率=%.1f%% 检出=%d 伪包=%d 平均SNR=%.1fdB 标记SNR=%.1fdB airtime=%.1fms",
+                format: "汇总 集合=%@ 通过=%d/%d 成功率=%.1f%% 检出=%d 平均SNR=%.1fdB 标记SNR=%.1fdB airtime=%.1fms",
                 locale: Locale(identifier: "en_US_POSIX"),
                 set.id, passed, setRows.count,
                 setRows.isEmpty ? 0 : Double(passed) / Double(setRows.count) * 100,
-                detectedRows.count, corruptBySet[set.id] ?? 0,
+                detectedRows.count,
                 mean(detectedRows.map { $0.snrDB }),
                 mean(detectedRows.map { $0.markerSNRDB }),
                 set.airtimeMs
@@ -137,7 +152,7 @@ enum ScanAnalyzer {
         let overallPassed = rows.filter { $0.passed }.count
         let overallRate = overallPackets == 0 ? 0 : Double(overallPassed) / Double(overallPackets)
         logs.append(String(
-            format: "总汇总 通过=%d/%d 成功率=%.1f%% 伪包=%d",
+            format: "总汇总 通过=%d/%d 成功率=%.1f%% 未匹配=%d",
             locale: Locale(identifier: "en_US_POSIX"),
             overallPassed, overallPackets, overallRate * 100, corruptEvents
         ))
@@ -161,12 +176,11 @@ enum ScanAnalyzer {
 
     private struct MarkerEvent {
         var startSample: Int
-        var set: SpectralSet
         var power: Double
         var snrDB: Double
     }
 
-    private static func markerEvents(audio: [Float], sets: [SpectralSet], sampleRate: Double) -> [MarkerEvent] {
+    private static func markerEvents(audio: [Float], sampleRate: Double, thresholdFactor: Double) -> [MarkerEvent] {
         guard audio.count >= ScanProtocol.markerSamples else { return [] }
         let window = ScanProtocol.markerSamples
         let hop = 240 // 5 ms
@@ -174,72 +188,37 @@ enum ScanAnalyzer {
         guard maxStart >= 0 else { return [] }
         let windowCount = maxStart / hop + 1
 
-        var perSet: [[MarkerEvent]] = []
-        for set in sets {
-            var powers = [Double](repeating: 0, count: windowCount)
-            for index in 0..<windowCount {
-                let start = index * hop
-                powers[index] = Goertzel.power(
-                    samples: audio[start..<(start + window)],
-                    sampleRate: sampleRate,
-                    frequency: set.markerHz
-                )
-            }
-            let noise = percentile(powers, 0.20)
-            let threshold = max(noise * 10, 1e-6)
-            var events: [MarkerEvent] = []
-            var index = 0
-            while index < powers.count {
-                let previous = index > 0 ? powers[index - 1] : -Double.infinity
-                let next = index + 1 < powers.count ? powers[index + 1] : -Double.infinity
-                if powers[index] >= threshold,
-                   powers[index] >= previous,
-                   powers[index] >= next {
-                    var peak = index
-                    let upper = min(index + 4, powers.count - 1)
-                    if index + 1 <= upper {
-                        for probe in (index + 1)...upper where powers[probe] > powers[peak] {
-                            peak = probe
-                        }
-                    }
-                    let snr = 10 * log10(max(powers[peak], 1e-20) / max(noise, 1e-20))
-                    events.append(MarkerEvent(
-                        startSample: index * hop,
-                        set: set,
-                        power: powers[peak],
-                        snrDB: snr
-                    ))
-                    index = peak + 1
-                } else {
-                    index += 1
-                }
-            }
-            perSet.append(events)
+        var powers = [Double](repeating: 0, count: windowCount)
+        for index in 0..<windowCount {
+            let start = index * hop
+            powers[index] = Goertzel.power(
+                samples: audio[start..<(start + window)],
+                sampleRate: sampleRate,
+                frequency: ScanProtocol.markerHz
+            )
         }
-
-        let combined = perSet.flatMap { $0 }.sorted { $0.startSample < $1.startSample }
-        var merged: [MarkerEvent] = []
-        for event in combined {
-            if let last = merged.last, event.startSample - last.startSample < ScanProtocol.markerSamples {
-                if event.power > last.power {
-                    merged[merged.count - 1] = event
-                }
-            } else {
-                merged.append(event)
+        let noise = percentile(powers, 0.20)
+        let threshold = max(noise * thresholdFactor, 1e-6)
+        var events: [MarkerEvent] = []
+        var index = 1
+        while index < powers.count {
+            guard powers[index] > threshold else {
+                index += 1
+                continue
             }
-        }
-
-        // 数据段里也可能有标记频率的能量；一帧之内不可能出现两个真正的标记音。
-        // 用上一帧的完整长度（标记 + 保护 + 数据 + 尾静音）过滤帧内伪事件。
-        var filtered: [MarkerEvent] = []
-        for event in merged {
-            if let last = filtered.last {
-                let minimumNext = last.startSample + ScanProtocol.frameSamples(for: last.set)
-                if event.startSample < minimumNext { continue }
+            var peak = index
+            while index < powers.count, powers[index] > threshold {
+                if powers[index] > powers[peak] { peak = index }
+                index += 1
             }
-            filtered.append(event)
+            let snr = 10 * log10(max(powers[peak], 1e-20) / max(noise, 1e-20))
+            events.append(MarkerEvent(
+                startSample: peak * hop,
+                power: powers[peak],
+                snrDB: snr
+            ))
         }
-        return filtered
+        return events
     }
 
     // MARK: - 数据帧
@@ -260,7 +239,7 @@ enum ScanAnalyzer {
         packets: Int
     ) -> Attempt? {
         var best: Attempt?
-        let offsets = [0, -48, 48, -96, 96, -144, 144, -192, 192, -240, 240]
+        let offsets = [0, -48, 48, -96, 96, -144, 144, -192, 192, -240, 240, -288, 288, -336, 336, -384, 384, -432, 432, -480, 480]
         for offset in offsets {
             let start = dataStart + offset
             guard start >= 0, start + plan.packetSamples <= audio.count else { continue }
