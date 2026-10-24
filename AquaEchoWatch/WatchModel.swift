@@ -2,106 +2,128 @@ import AVFoundation
 import Foundation
 import SwiftUI
 
+/// 手表端扫描发送器：只播放，不录音、不做反馈、不握手。
+/// 序列固定为“集合列表 × 每组包数”，每包 = 标记音 + 保护间隔 + OFDM 数据。
 @MainActor
 final class WatchModel: ObservableObject {
-    @Published var config: TestConfig
-    @Published var reachable = false
-    @Published var isRunning = false
-    @Published var status = "等待 iPhone 开始"
+    @Published private(set) var status = "等待手机同步场景"
+    @Published private(set) var reachable = false
+    @Published private(set) var isRunning = false
+    @Published private(set) var progressText = ""
+    @Published private(set) var runLabel = "未同步场景"
     @Published var outputVolume: Float = 0
     @Published var playbackVolume: Double = 1
+    @Published private(set) var foregroundRunning = false
     @Published var foregroundStatus = "正在申请前台"
+    @Published private(set) var config = ScanRunConfig()
 
-    private let link = WatchLink()
     private let player = TonePlayer()
+    private let link = WatchLink()
     let foreground = ForegroundSession()
+    private var task: Task<Void, Never>?
     private var stopRequested = false
-    private var didStop = false
-    private var playing = false
     private var pendingLogs: [String] = []
-    private var flushingLogs = false
-    /// 发送循环进行中时为 true：日志只进本地文件和 pendingLogs，不经 Watch Connectivity 发出。
     private var holdLogSync = false
 
     init() {
-        config = ConfigStore.load()
-        player.onLog = { [weak self] message in
-            self?.log(message)
-        }
+        player.onLog = { [weak self] message in self?.log(message) }
         foreground.onEvent = { [weak self] message in
-            self?.log(message)
-            self?.foregroundStatus = self?.foreground.status ?? message
+            guard let self else { return }
+            self.log(message)
+            self.foregroundRunning = self.foreground.running
+            self.foregroundStatus = self.foreground.status
         }
         foreground.onStopSound = { [weak self] reason in
             if reason.hasPrefix("resignedFrontmost") {
-                self?.foreground.setAllowedToStart(false)
+                self?.log("按数码表冠离开，停止扫描")
+                self?.stop()
             }
-            self?.stop(reason: reason)
         }
         link.onEnvelope = { [weak self] envelope in
-            Task { @MainActor in
-                self?.handle(envelope)
-            }
+            Task { @MainActor in self?.handle(envelope) }
         }
         link.onReachable = { [weak self] value in
             Task { @MainActor in
                 self?.reachable = value
+                guard value else { return }
                 self?.flushLogs()
             }
         }
         link.activate()
+        playbackVolume = 1
+        player.setPlaybackVolume(1)
         refreshOutputVolume()
-        playbackVolume = Double(outputVolume)
-        applyPlaybackVolume()
-        log("手表端启动 构建 \(AppBuild.number)")
+
         WatchActivation.onDidBecomeActive = { [weak self] in
-            self?.startExtendedRuntimeAfterBecomeActive()
+            self?.foreground.setAllowedToStart(true)
+            self?.foreground.ensureRunning()
+            self?.flushLogs(force: true)
         }
         WatchActivation.onWillResignActive = { [weak self] in
-            self?.log("applicationWillResignActive 构建 \(AppBuild.number)")
             self?.foreground.setAllowedToStart(false)
             self?.flushLogs(force: true)
         }
         WatchActivation.onDidEnterBackground = { [weak self] in
-            self?.log("applicationDidEnterBackground 构建 \(AppBuild.number)")
             self?.flushLogs(force: true)
         }
+
+        log("手表扫描端启动 构建 \(AppBuild.number)")
     }
 
-    func startExtendedRuntimeAfterBecomeActive() {
+    var packetsPerSet: Int { max(1, min(200, config.packetsPerSet)) }
+    var sets: [SpectralSet] { config.activeSets }
+    var totalPackets: Int { sets.count * packetsPerSet }
+
+    func start() {
+        guard !isRunning else { return }
+        stopRequested = false
+        isRunning = true
+        status = "准备播放"
+        progressText = "0/\(totalPackets)"
+        refreshOutputVolume()
         foreground.setAllowedToStart(true)
-        log("延长运行已在 applicationDidBecomeActive 后延迟启动 构建 \(AppBuild.number)")
-        flushLogs(force: true)
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            self.foreground.startIfNeeded()
-            self.foregroundStatus = self.foreground.status
-            self.flushLogs(force: true)
+        foreground.ensureRunning()
+
+        do {
+            try player.preparePlaybackOnly()
+        } catch {
+            status = "播放器启动失败：\(error.localizedDescription)"
+            log("错误 播放器启动失败 \(error.localizedDescription)")
+            isRunning = false
+            return
         }
+
+        log("开始扫描 \(config.label) 集合=\(sets.map(\.id).joined(separator: ",")) 每组=\(packetsPerSet) 总包=\(totalPackets) 系统音量=\(String(format: "%.2f", outputVolume))")
+        task = Task { await run() }
+    }
+
+    func stop() {
+        guard isRunning else { return }
+        stopRequested = true
+        task?.cancel()
+        task = nil
+        player.stop()
+        foreground.endBecauseUserStoppedOrLeft()
+        foregroundRunning = false
+        isRunning = false
+        status = "已停止"
+        log("停止扫描")
+    }
+
+    /// 扫描完成后保持前台；用户主动结束，或按数码表冠离开时调用。
+    func endForeground() {
+        foreground.endBecauseUserStoppedOrLeft()
+        foregroundRunning = false
+        if !isRunning { status = "已结束前台保持" }
+        log("结束前台保持")
     }
 
     func noteScenePhase(_ phase: ScenePhase) {
         foreground.noteScenePhase(phase)
-        foregroundStatus = foreground.status
-    }
-
-    func requestStart() {
-        guard !isRunning else { return }
-        foreground.setAllowedToStart(true)
-        foreground.ensureRunning()
-        link.send(WCEnvelope(kind: .requestStart, config: config, packet: nil, packets: nil, progress: nil))
-        status = reachable ? "已请 iPhone 开始录音" : "iPhone 未连接"
-    }
-
-    func stop(reason: String) {
-        guard !didStop else { return }
-        didStop = true
-        stopRequested = true
-        status = "已停止"
-        log("停止发送 原因=\(reason)")
-        player.stop()
-        foreground.endBecauseUserStoppedOrLeft()
-        foregroundStatus = foreground.status
+        if phase == .active {
+            foreground.setAllowedToStart(true)
+            foreground.ensureRunning()
+        }
     }
 
     func refreshOutputVolume() {
@@ -110,30 +132,20 @@ final class WatchModel: ObservableObject {
 
     func applyPlaybackVolume() {
         player.setPlaybackVolume(Float(playbackVolume))
+        foregroundStatus = foreground.status
     }
 
-    private func handle(_ envelope: WCEnvelope) {
-        switch envelope.kind {
-        case .config:
-            if let config = envelope.config {
-                self.config = config.normalized
-                ConfigStore.save(self.config)
-                status = "已收到新配置"
-            }
-        case .start:
-            if let config = envelope.config {
-                self.config = config.normalized
-                ConfigStore.save(self.config)
-            }
-            guard !playing else { return }
-            foreground.setAllowedToStart(true)
-            foreground.ensureRunning()
-            Task { await run() }
-        case .stop:
-            stop(reason: "收到手机停止指令")
-        case .requestStart, .progress, .packet, .finished, .log:
-            break
-        }
+    /// 手表上手动开始：手机没有点开始时也能发，但手机必须同时在录音才能有结果。
+    func requestStart() {
+        guard !isRunning else { return }
+        log("手表手动开始；请确认手机已开始录音")
+        start()
+    }
+
+    func stop(reason: String) {
+        guard isRunning else { return }
+        log("停止发送 原因=\(reason)")
+        stop()
     }
 
     private func run() async {
@@ -141,171 +153,110 @@ final class WatchModel: ObservableObject {
         defer {
             holdLogSync = false
             flushLogs()
-            if !pendingLogs.isEmpty {
-                retryLogFlush()
-            }
         }
-        playing = true
-        isRunning = true
-        stopRequested = false
-        didStop = false
-        let config = self.config.normalized
-        var sent: [SentPacket] = []
+
+        let packets = packetsPerSet
+        let activeSets = sets
+        if activeSets.isEmpty {
+            status = "没有可发送的集合"
+            isRunning = false
+            return
+        }
+
         do {
-            let allowed = await requestMicrophone()
-            if !allowed {
-                log("没有麦克风权限，无法接收反馈")
-                status = "没有麦克风权限"
-            } else {
-                try player.prepare()
-                refreshOutputVolume()
-                let volume = outputVolume
-                log(String(format: "音量 outputVolume=%.2f", locale: Locale(identifier: "en_US_POSIX"), volume))
-                if volume < 0.95 {
-                    status = "音量不足，请旋转数码表冠调到最大"
-                }
-                let band = config.frequency
-                log("开始探测，候选 \(HzFormat.string(band.candidateLowHz)) / \(HzFormat.string(band.candidateHighHz)) Hz，重复 \(config.repeats) 次")
-                try await Task.sleep(nanoseconds: 400_000_000)
-                let probe = FeedbackSignal.soundingSignal(config: config)
-                var selectedBand: (fbegin: Double, fend: Double)?
-                while !stopRequested {
-                    try player.prepare()
-                    log("探测 开始播放前导 samples=\(probe.samples.count)")
-                    _ = try await player.play(samples: probe.samples, leadSamples: probe.leadSamples)
-                    log("探测 前导播放结束")
-                    if stopRequested { break }
-                    let inputRate = try player.beginRecording()
-                    log("探测 开始录音等待反馈 上限=\(OFDMConstants.feedbackListenSeconds)s")
-                    try await Task.sleep(nanoseconds: UInt64(OFDMConstants.feedbackListenSeconds * 1_000_000_000))
-                    let heard = player.endRecording()
-                    if stopRequested { break }
-                    if let selected = FeedbackSignal.frequencies(
-                        in: heard,
-                        sampleRate: inputRate,
-                        frequency: config.frequency
-                    ) {
-                        log("探测 解析成功 fbegin=\(HzFormat.string(selected.fbegin)) fend=\(HzFormat.string(selected.fend))")
-                        selectedBand = selected
-                        break
-                    }
-                    log("探测 本轮失败 原因=超时或无法解析")
-                    if stopRequested { break }
-                    log("探测 开始下一轮")
-                }
-                if let selected = selectedBand, !stopRequested {
-                        let pair = PlannedPair(lowHz: selected.fbegin, highHz: selected.fend)
-                        log("当前频率对 \(pair.label)")
-                        var sequence = 0
-                        for repeatIndex in 0..<config.repeats {
-                            if stopRequested { break }
-                            sequence += 1
-                            let payload = PacketLayout.encode(lowHz: pair.lowHz, highHz: pair.highHz, sequence: repeatIndex)
-                            let rendered = try render(pair: pair, payload: payload, config: config)
-                            log("编码完成 \(config.mode.title) \(pair.label) \(rendered.samples.count) 样本 载荷 \(PacketFactory.hex(payload))")
-                            status = "\(sequence) · \(pair.label)"
-                            link.send(WCEnvelope(
-                                kind: .progress,
-                                config: nil,
-                                packet: nil,
-                                packets: nil,
-                                progress: "正在发送 \(pair.label)（\(repeatIndex + 1)/\(config.repeats)）"
-                            ))
-                            let sendDate = try await player.play(samples: rendered.samples, leadSamples: rendered.leadSamples)
-                            log("发送时间 \(RunLog.timestamp(sendDate)) 序号 \(sequence) \(pair.label)")
-                            log("播放结束 序号 \(sequence) 时间 \(RunLog.timestamp(Date()))")
-                            let packet = SentPacket(
-                                sequence: sequence,
-                                repeatIndex: repeatIndex,
-                                lowHz: pair.lowHz,
-                                highHz: pair.highHz,
-                                payloadHex: PacketFactory.hex(payload),
-                                watchSendTimestamp: sendDate.timeIntervalSince1970
-                            )
-                            sent.append(packet)
-                            link.send(WCEnvelope(kind: .packet, config: nil, packet: packet, packets: nil, progress: nil))
-                        }
-                        if !stopRequested {
-                            status = "发送完成"
-                            log("发送完成，共 \(sent.count) 包")
-                        }
+            status = "3 秒后开始"
+            try await Task.sleep(nanoseconds: 3_000_000_000)
+            try Task.checkCancellation()
+            if stopRequested { return }
+
+            var sent = 0
+            for set in activeSets {
+                for index in 0..<packets {
+                    if stopRequested || Task.isCancelled { return }
+                    let payload = ScanPayload.make(setID: set.id, packetIndex: index)
+                    let frame = ScanProtocol.makeFrame(payload: payload, set: set)
+                    let airtime = Double(frame.count) / ScanProtocol.sampleRate * 1_000
+                    let date = try await player.play(samples: frame, leadSamples: 0)
+                    sent += 1
+                    progressText = "\(set.id) \(index + 1)/\(packets) · \(sent)/\(activeSets.count * packets)"
+                    status = "发送 \(set.id) 包 \(index + 1)/\(packets)"
+                    log(String(
+                        format: "集合=%@ 包=%d 期望=%@ airtime=%.1fms 发送时间=%@",
+                        locale: Locale(identifier: "en_US_POSIX"),
+                        set.id, index, ScanPayload.hex(payload), airtime, RunLog.timestamp(date)
+                    ))
                 }
             }
+
+            status = "扫描完成（前台保持中）"
+            progressText = "\(sent)/\(activeSets.count * packets)"
+            log("扫描完成 共 \(sent) 包")
+            link.send(WCEnvelope(kind: .finished))
+        } catch is CancellationError {
+            status = "已停止"
+            log("扫描被取消")
         } catch {
-            status = error.localizedDescription
+            status = "错误：\(error.localizedDescription)"
             log("错误 \(error.localizedDescription)")
         }
-        link.send(WCEnvelope(kind: .finished, config: config, packet: nil, packets: sent, progress: nil))
+
         player.stop()
         isRunning = false
-        playing = false
+        task = nil
+        foregroundRunning = foreground.running
         refreshOutputVolume()
     }
 
+    private func handle(_ envelope: WCEnvelope) {
+        if (envelope.kind == .config || envelope.kind == .start), let scan = envelope.scanConfig {
+            config = scan.normalized
+            runLabel = config.label
+            log("收到手机\(envelope.kind == .start ? "开始指令" : "配置") \(config.label)")
+            if envelope.kind == .start {
+                start()
+            } else {
+                status = "已同步：\(config.scenario.title)"
+            }
+            return
+        }
+        if envelope.kind == .start {
+            start()
+            return
+        }
+        if envelope.kind == .stop {
+            stop(reason: "收到手机停止指令")
+            return
+        }
+        if envelope.kind == .config || envelope.kind == .finished {
+            return
+        }
+        if envelope.kind == .log, let line = envelope.log {
+            // 手表不消费手机日志，忽略即可。
+            _ = line
+        }
+    }
+
     private func log(_ message: String) {
-        let line = "[Watch] \(message)"
+        let line = "[Watch][Scan] \(message)"
         RunLog.shared.append(line)
         pendingLogs.append(line)
-        foregroundStatus = foreground.status
         guard !holdLogSync else { return }
         flushLogs()
-        if !pendingLogs.isEmpty {
-            retryLogFlush()
-        }
     }
 
     private func flushLogs(force: Bool = false) {
         guard (force || !holdLogSync), !pendingLogs.isEmpty else { return }
         let batch = pendingLogs.joined(separator: "\n")
-        if link.send(WCEnvelope(kind: .log, log: batch)) {
-            pendingLogs = []
-        }
-    }
-
-    private func retryLogFlush() {
-        guard !holdLogSync, !flushingLogs else { return }
-        flushingLogs = true
-        Task { @MainActor in
-            for _ in 0..<20 {
-                if holdLogSync || pendingLogs.isEmpty { break }
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                if holdLogSync { break }
-                flushLogs()
+        var remaining = batch[...]
+        // 单条 WatchConnectivity 消息有大小上限；按约 8 KB 分块发送。
+        while !remaining.isEmpty {
+            let chunk = String(remaining.prefix(8_000))
+            guard link.send(WCEnvelope(kind: .log, log: chunk)) else {
+                return
             }
-            flushingLogs = false
-            if !holdLogSync, !pendingLogs.isEmpty {
-                retryLogFlush()
-            }
+            remaining = remaining.dropFirst(chunk.count)
         }
-    }
-
-    private func requestMicrophone() async -> Bool {
-        let application = AVAudioApplication.shared
-        switch application.recordPermission {
-        case .granted:
-            return true
-        case .denied:
-            return false
-        case .undetermined:
-            return await withCheckedContinuation { continuation in
-                AVAudioApplication.requestRecordPermission { granted in
-                    continuation.resume(returning: granted)
-                }
-            }
-        @unknown default:
-            return false
-        }
-    }
-
-    private func render(pair: PlannedPair, payload: Data, config: TestConfig) throws -> (samples: [Float], leadSamples: Int) {
-        let leadSamples = Int((config.leadSilenceMs / 1_000 * config.sampleRate).rounded())
-        let samples = OFDMModem.playback(
-            bits: ConvolutionalCode.encode(PacketLayout.bits(for: payload)),
-            f0: pair.lowHz,
-            f1: pair.highHz,
-            config: config
-        )
-        return (samples, leadSamples)
+        pendingLogs.removeAll()
     }
 }
 

@@ -1,116 +1,182 @@
 import SwiftUI
 
 struct RootView: View {
+    @EnvironmentObject private var model: PhoneModel
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
         TabView {
             TestScreen()
                 .tabItem { Label("测试", systemImage: "waveform") }
             ResultsScreen()
-                .tabItem { Label("结果", systemImage: "list.number") }
+                .tabItem { Label("结果", systemImage: "chart.bar") }
             ConfigScreen()
                 .tabItem { Label("配置", systemImage: "slider.horizontal.3") }
             LogScreen()
                 .tabItem { Label("日志", systemImage: "doc.text") }
         }
+        .onChange(of: scenePhase) { _, phase in
+            model.noteScenePhase(phase)
+        }
     }
 }
 
-struct TestScreen: View {
+// MARK: - 测试
+
+private struct TestScreen: View {
     @EnvironmentObject private var model: PhoneModel
 
     var body: some View {
         NavigationStack {
             List {
-                Section("连接") {
-                    LabeledContent("构建", value: AppBuild.number)
-                    LabeledContent("Watch") {
-                        Text(model.reachable ? "已连接" : (model.activated ? "未打开" : "会话未激活"))
-                            .foregroundStyle(model.reachable ? .green : .secondary)
+                Section("当前场景") {
+                    Text(model.config.scenario.title)
+                        .font(.title2.bold())
+                    Picker("场景", selection: $model.config.scenario) {
+                        ForEach(TestScenario.allCases) { scenario in
+                            Text(scenario.title).tag(scenario)
+                        }
                     }
-                    LabeledContent("模式", value: model.config.mode.title)
-                    LabeledContent("候选频段", value: "\(HzFormat.string(model.config.frequency.candidateLowHz))–\(HzFormat.string(model.config.frequency.candidateHighHz)) Hz")
-                    LabeledContent("预计时长", value: duration(model.config.estimatedTestSeconds))
-                }
-                Section("本次") {
-                    Text(model.status)
-                    if model.isRunning {
-                        LabeledContent("已收到", value: "\(model.receivedCount) / \(model.expectedCount)")
-                        ProgressView()
-                    }
-                    if let error = model.lastError {
-                        Text(error).foregroundStyle(.red)
-                    }
-                }
-                Section {
-                    Text("测试时请把 Watch 音量调到最大，让扬声器靠近 iPhone 底部麦克风。近超声在空气里衰减很快；潜水或隔着外壳时，把两台设备放在真实相对位置再开始。")
+                    .pickerStyle(.segmented)
+                    Text(model.config.scenario.detail)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("测试条件") {
+                    HStack {
+                        Text("距离")
+                        TextField("cm", value: $model.config.distanceCm, format: .number.precision(.fractionLength(0...1)))
+                            .keyboardType(.decimalPad)
+                            .multilineTextAlignment(.trailing)
+                        Text("cm").foregroundStyle(.secondary)
+                    }
+                    TextField("备注（袋型 / 深度 / 朝向）", text: $model.config.notes, axis: .vertical)
+                        .lineLimit(1...3)
+                }
+
+                Section("本次") {
+                    Picker("每组包数", selection: $model.config.packetsPerSet) {
+                        Text("20（快筛）").tag(20)
+                        Text("50（精确）").tag(50)
+                        Text("100").tag(100)
+                    }
+                    LabeledContent("预计包数", value: "\(model.expectedPackets)")
+                    LabeledContent("预计时长", value: String(format: "%.1f 秒", model.expectedSeconds))
+                    LabeledContent("手表", value: model.reachable ? "已连接" : (model.activated ? "未打开" : "会话未激活"))
+                    if let analysis = model.analysis {
+                        LabeledContent("上次通过", value: "\(analysis.overallPassed)/\(analysis.overallPackets)")
+                    }
+                }
+
+                Section("状态") {
+                    Text(model.status)
+                        .font(.footnote)
+                    if let started = model.startedAt, model.isRecording {
+                        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                            LabeledContent("已录", value: String(format: "%.1f 秒", context.date.timeIntervalSince(started)))
+                        }
+                    }
+                    if model.isAnalyzing {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                            Text("正在保存并分析…").font(.caption)
+                        }
+                    }
+                    if let error = model.lastError {
+                        Text(error).foregroundStyle(.red).font(.footnote)
+                    }
                 }
             }
             .navigationTitle("AquaEcho")
             .safeAreaInset(edge: .bottom) {
-                VStack(spacing: 8) {
-                    if model.isRunning {
-                        Button("停止并评分", role: .destructive, action: model.stopTest)
+                VStack(spacing: 6) {
+                    if model.isRecording {
+                        Button("停止并评分", role: .destructive) {
+                            model.stopTest()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
                     } else {
                         Button("开始测试") {
                             Task { await model.startTest() }
                         }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(model.isAnalyzing)
                     }
+                    Text("手机会请求手表同时开始扫描；停止后先保存 WAV，再离线分析。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
                 .padding()
+                .frame(maxWidth: .infinity)
+                .background(.bar)
             }
         }
     }
-
-    private func duration(_ seconds: Double) -> String {
-        if seconds < 90 { return "\(Int(seconds.rounded())) 秒" }
-        return String(format: "%.1f 分钟", locale: Locale(identifier: "en_US_POSIX"), seconds / 60)
-    }
 }
 
-struct ResultsScreen: View {
+// MARK: - 结果
+
+private struct ResultsScreen: View {
     @EnvironmentObject private var model: PhoneModel
 
     var body: some View {
         NavigationStack {
             Group {
-                if model.pairs.isEmpty {
-                    ContentUnavailableView("还没有结果", systemImage: "ear", description: Text("完成一次测试后，这里会按总分列出频率组合。"))
-                } else {
+                if let analysis = model.analysis {
                     List {
-                        if let best = model.pairs.first(where: \.isRecommended) {
-                            Section("推荐（总分 ≥ 80）") {
-                                ForEach(model.pairs.filter(\.isRecommended)) { pair in
-                                    NavigationLink {
-                                        PairDetailView(pair: pair)
-                                    } label: {
-                                        PairRow(pair: pair, highlighted: pair.id == best.id)
-                                    }
-                                }
+                        Section("场景") {
+                            LabeledContent("场景", value: analysis.config.scenario.title)
+                            LabeledContent("距离", value: String(format: "%.1f cm", analysis.config.distanceCm))
+                            LabeledContent("备注", value: analysis.config.notes.isEmpty ? "无" : analysis.config.notes)
+                            LabeledContent("每组包数", value: "\(analysis.config.packetsPerSet)")
+                            LabeledContent("开始", value: RunLog.timestamp(analysis.startedAt))
+                            LabeledContent("结束", value: RunLog.timestamp(analysis.finishedAt))
+                            LabeledContent("构建", value: AppBuild.number)
+                        }
+                        Section("总体") {
+                            HStack {
+                                Text("\(analysis.overallPassed)/\(analysis.overallPackets)")
+                                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                                Text(String(format: "%.1f%%", analysis.overallRate * 100))
+                                    .font(.title2.bold())
+                                    .foregroundStyle(analysis.overallRate >= 0.8 ? .green : .orange)
+                                Spacer()
+                            }
+                            Text("80% 目标 \(analysis.overallRate >= 0.8 ? "已达到" : "未达到")；伪包 \(analysis.corruptEvents) 个。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        Section("按集合") {
+                            ForEach(analysis.summaries) { summary in
+                                ScanSetRow(summary: summary)
                             }
                         }
-                        Section(model.pairs.contains(where: \.isRecommended) ? "其他频率对" : "全部频率对") {
-                            ForEach(model.pairs.filter { !$0.isRecommended }) { pair in
-                                NavigationLink {
-                                    PairDetailView(pair: pair)
-                                } label: {
-                                    PairRow(pair: pair, highlighted: false)
-                                }
-                            }
-                        }
-                        if let url = model.csvURL {
-                            Section("CSV") {
-                                Text(url.lastPathComponent)
+                        Section("文件") {
+                            if let url = model.csvURL {
                                 ShareLink(item: url) { Label("导出 CSV", systemImage: "square.and.arrow.up") }
-                                Text("文件在 App 的 Documents 里。访达或「文件」App 都能直接看到。")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
+                            }
+                            if let url = model.wavURL {
+                                ShareLink(item: url) { Label("导出 WAV", systemImage: "waveform") }
+                            }
+                            if let url = model.scanLogURL {
+                                ShareLink(item: url) { Label("导出分析日志", systemImage: "doc.text") }
+                            }
+                        }
+                        Section("明细") {
+                            NavigationLink("查看每包结果") {
+                                ScanPacketDetailView(analysis: analysis)
                             }
                         }
                     }
+                } else {
+                    ContentUnavailableView(
+                        "还没有结果",
+                        systemImage: "chart.bar",
+                        description: Text("在“测试”页开始，手机会同时启动手表；停止或收到手表完成消息后自动分析。")
+                    )
                 }
             }
             .navigationTitle("结果")
@@ -118,189 +184,179 @@ struct ResultsScreen: View {
     }
 }
 
-struct PairRow: View {
-    var pair: PairScore
-    var highlighted: Bool
+private struct ScanSetRow: View {
+    let summary: ScanSetSummary
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(pair.label).font(.headline)
-                Text("SNR \(format(pair.meanSNRdB)) dB · 通过 \(format(pair.passRate * 100))%")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(summary.setTitle).font(.subheadline.bold())
+                Spacer()
+                Text("\(summary.passed)/\(summary.packets)")
+                    .font(.subheadline.monospacedDigit())
+                Text(String(format: "%.0f%%", summary.successRate * 100))
+                    .font(.subheadline.bold().monospacedDigit())
+                    .foregroundStyle(summary.successRate >= 0.8 ? .green : .orange)
             }
-            Spacer()
-            Text("\(pair.score.total)")
-                .font(.title2.monospacedDigit().weight(.semibold))
-                .foregroundStyle(pair.isRecommended ? Color.green : Color.primary)
+            ProgressView(value: summary.successRate)
+                .tint(summary.successRate >= 0.8 ? .green : .orange)
+            HStack {
+                Text("\(summary.carrierCount) 子载波")
+                Text("· \(String(format: "%.0f", summary.airtimeMs)) ms/包")
+                Text("· SNR \(String(format: "%.1f", summary.meanSNRDB)) dB")
+                if summary.corrupt > 0 {
+                    Text("· 伪包 \(summary.corrupt)").foregroundStyle(.red)
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
-        .listRowBackground(highlighted ? Color.green.opacity(0.12) : nil)
-    }
-
-    private func format(_ value: Double) -> String {
-        String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), value)
     }
 }
 
-struct PairDetailView: View {
-    var pair: PairScore
+private struct ScanPacketDetailView: View {
+    let analysis: ScanAnalysis
 
     var body: some View {
         List {
-            Section {
-                LabeledContent("总分", value: "\(pair.score.total) / 100")
-                LabeledContent("平均 SNR", value: "\(num(pair.meanSNRdB, 2)) dB → \(pair.score.snr) / 40")
-                LabeledContent("双频区分度", value: "\(num(pair.ratioDB, 2)) dB → \(pair.score.separation) / 20")
-                LabeledContent("通过率", value: "\(num(pair.passRate * 100, 1))% → \(pair.score.passRate) / 40")
-            }
-            Section("每次发送") {
-                ForEach(pair.transmissions) { transmission in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("#\(transmission.packet.sequence)  \(transmission.packet.payloadHex)")
-                            .font(.system(.body, design: .monospaced))
-                        Text("Watch \(stamp(transmission.packet.watchSendDate))")
-                            .font(.caption)
-                        Text("iPhone \(transmission.phoneReceiveDate.map(stamp) ?? "未检出")")
-                            .font(.caption)
-                        Text("本包 SNR \(num(transmission.packetSNRdB, 1)) dB · \(transmission.passed ? "通过" : "未通过")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        .navigationTitle(pair.label)
-    }
-
-    private func num(_ value: Double, _ digits: Int) -> String {
-        String(format: "%.\(digits)f", locale: Locale(identifier: "en_US_POSIX"), value)
-    }
-
-    private func stamp(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = .current
-        formatter.dateFormat = "HH:mm:ss.SSS"
-        return formatter.string(from: date)
-    }
-}
-
-struct ConfigScreen: View {
-    @EnvironmentObject private var model: PhoneModel
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Picker("模式", selection: $model.config.mode) {
-                    ForEach(TestMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                Section("扫描") {
-                    numberField("下限", unit: "Hz", value: $model.config.frequency.candidateLowHz)
-                    numberField("上限", unit: "Hz", value: $model.config.frequency.candidateHighHz)
-                    numberField("步进", unit: "Hz", value: $model.config.stepHz)
-                    numberField("频率间隔", unit: "Hz", value: $model.config.pairSeparationHz)
-                    Text("下限和上限是候选频段。手机在这段里选出 SNR 超过 6 dB 的最长连续区间，手表只在选出的频率上发数据。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                Section("包") {
-                    numberField("符号时长", unit: "ms", value: $model.config.symbolDurationMs)
-                    numberField("循环前缀", unit: "ms", value: $model.config.cyclicPrefixMs)
-                    numberField("静音时长", unit: "ms", value: $model.config.silenceDurationMs)
-                    HStack {
-                        Text("重复次数")
-                        Spacer(minLength: 8)
-                        Stepper(value: $model.config.repeats, in: 1...30) {
-                            Text("\(model.config.repeats)")
-                                .monospacedDigit()
+            ForEach(analysis.summaries) { summary in
+                Section(summary.setTitle) {
+                    ForEach(analysis.packets.filter { $0.setID == summary.setID }) { packet in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Image(systemName: statusIcon(packet))
+                                    .foregroundStyle(statusColor(packet))
+                                Text("包 \(packet.packetIndex)").font(.subheadline.bold())
+                                Spacer()
+                                Text(statusText(packet))
+                                    .font(.caption)
+                                    .foregroundStyle(statusColor(packet))
+                            }
+                            Text("期望 \(packet.expectedHex)").font(.caption2.monospaced())
+                            Text(decodedLabel(packet))
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(packet.passed ? .gray : .red)
+                            Text(metricsLabel(packet))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
-                        .fixedSize()
-                        Text("次")
-                            .foregroundStyle(.secondary)
                     }
-                    numberField("前导静音", unit: "ms", value: $model.config.leadSilenceMs)
-                    numberField("结尾静音", unit: "ms", value: $model.config.trailSilenceMs)
-                    Text("符号时长是有用符号长度。循环前缀加在每个符号前面。前导是 watercomms 的 naiser3。静音时长是前导和第一个符号之间的间隔。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                Section {
-                    LabeledContent("候选", value: "\(HzFormat.string(model.config.frequency.candidateLowHz))–\(HzFormat.string(model.config.frequency.candidateHighHz)) Hz")
-                    Button("同步到 Watch") { model.syncConfig() }
                 }
             }
-            .navigationTitle("配置")
-            .onAppear(perform: alignFrequencyRange)
-            .onChange(of: model.config.mode) { _, _ in
-                alignFrequencyRange()
-            }
         }
+        .navigationTitle("每包结果")
     }
 
-    private func alignFrequencyRange() {
-        model.config.stepHz = 3_000
-        model.config.pairSeparationHz = 3_000
-        model.config.symbolDurationMs = 20
-        model.config.cyclicPrefixMs = 1.4
-        model.config.silenceDurationMs = 20
+    private func decodedLabel(_ packet: ScanPacketResult) -> String {
+        "解出 " + (packet.decodedHex ?? "—")
     }
 
-    private func numberField(_ title: String, unit: String, value: Binding<Double>) -> some View {
-        HStack {
-            Text(title)
-            Spacer(minLength: 8)
-            TextField(title, value: value, format: .number.precision(.fractionLength(0...1)))
-                .keyboardType(.decimalPad)
-                .multilineTextAlignment(.trailing)
-                .frame(maxWidth: 140)
-            Text(unit)
-                .foregroundStyle(.secondary)
-        }
+    private func statusIcon(_ packet: ScanPacketResult) -> String {
+        if packet.passed { return "checkmark.circle.fill" }
+        if packet.detected { return "xmark.circle.fill" }
+        return "circle.dashed"
+    }
+
+    private func statusColor(_ packet: ScanPacketResult) -> Color {
+        if packet.passed { return .green }
+        if packet.detected { return .red }
+        return .gray
+    }
+
+    private func statusText(_ packet: ScanPacketResult) -> String {
+        if packet.passed { return "通过" }
+        if packet.detected { return "失败" }
+        return "缺失"
+    }
+
+    private func metricsLabel(_ packet: ScanPacketResult) -> String {
+        let snr = String(format: "%.1f", packet.snrDB)
+        let marker = String(format: "%.1f", packet.markerSNRDB)
+        let air = String(format: "%.0f", packet.airtimeMs)
+        return "SNR \(snr) dB · 标记 \(marker) dB · \(air) ms"
     }
 }
 
-struct LogScreen: View {
+// MARK: - 配置
+
+private struct ConfigScreen: View {
     @EnvironmentObject private var model: PhoneModel
 
     var body: some View {
         NavigationStack {
             List {
-                Section(model.logURL?.lastPathComponent ?? "当前日志") {
-                    if model.logText.isEmpty {
-                        Text("还没有日志")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text(model.logText)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                    }
-                    if let url = model.logURL {
-                        ShareLink(item: url) {
-                            Label("导出当前日志", systemImage: "square.and.arrow.up")
-                        }
-                    }
-                    Button("刷新", action: model.reloadLog)
-                }
-                Section("Documents 里的日志、CSV 和调试录音") {
-                    ForEach(RunLog.documentFiles(), id: \.path) { url in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(url.lastPathComponent)
-                                .font(.caption)
-                            ShareLink(item: url) {
-                                Text("导出")
+                Section("扫描集合") {
+                    ForEach(SpectralSet.all) { set in
+                        Toggle(isOn: binding(for: set.id)) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(set.title)
+                                Text("\(set.carrierCount) 子载波 · \(set.dataSymbols) 数据符号 · \(String(format: "%.0f", set.airtimeMs)) ms/包")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
-                    Button("一键清理", role: .destructive) { model.clearResultFiles() }
-                    if let message = model.cleanupMessage {
-                        Text(message)
-                    }
-                    Text("文件在 App 的 Documents 目录。用数据线连上 Mac 后，在访达侧边栏打开这台 iPhone 里的 AquaEcho；或在「文件」App 的「我的 iPhone」里查看。")
-                        .font(.footnote)
+                    Text("不选任何集合时使用全部 7 组。")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                Section {
+                    Button("同步到 Watch") { model.syncConfig() }
+                    Text("场景、距离、备注和集合会一起同步；水下没有蓝牙，开始前同步一次即可。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("配置")
+        }
+    }
+
+    private func binding(for id: String) -> Binding<Bool> {
+        Binding(
+            get: { model.config.activeSets.contains { $0.id == id } },
+            set: { isOn in
+                var ids = model.config.activeSets.map(\.id)
+                if isOn {
+                    if !ids.contains(id) { ids.append(id) }
+                } else {
+                    ids.removeAll { $0 == id }
+                }
+                model.config.setIDs = ids
+            }
+        )
+    }
+}
+
+// MARK: - 日志
+
+private struct LogScreen: View {
+    @EnvironmentObject private var model: PhoneModel
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("当前日志") {
+                    if model.logText.isEmpty {
+                        Text("还没有日志").foregroundStyle(.secondary)
+                    } else {
+                        Text(model.logText)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    ShareLink(item: model.logURL) {
+                        Label("导出当前日志", systemImage: "square.and.arrow.up")
+                    }
+                    Button("刷新", action: model.reloadLog)
+                }
+                Section("Documents") {
+                    ForEach(RunLog.documentFiles(), id: \.path) { url in
+                        ShareLink(item: url) {
+                            Text(url.lastPathComponent).font(.caption)
+                        }
+                    }
+                    Button("一键清理扫描文件", role: .destructive) {
+                        model.clearResultFiles()
+                    }
                 }
             }
             .navigationTitle("日志")

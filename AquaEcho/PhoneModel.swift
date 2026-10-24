@@ -1,190 +1,253 @@
+import Combine
 import Foundation
+import SwiftUI
 import UIKit
+
+/// 录音缓冲。音频回调在非主线程，只做加锁追加；分析在停止后离线进行。
+final class PCMBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [Float] = []
+    private var sampleRate: Double = 48_000
+
+    func reset() {
+        lock.lock()
+        samples.removeAll(keepingCapacity: false)
+        sampleRate = 48_000
+        lock.unlock()
+    }
+
+    func append(_ chunk: [Float], rate: Double) {
+        lock.lock()
+        sampleRate = rate
+        samples.append(contentsOf: chunk)
+        lock.unlock()
+    }
+
+    func snapshot() -> ([Float], Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (samples, sampleRate)
+    }
+}
 
 @MainActor
 final class PhoneModel: ObservableObject {
-    @Published var config: TestConfig
-    @Published var reachable = false
-    @Published var activated = false
-    @Published var isRunning = false
-    @Published var status = "把 Watch 音量调到最大，再开始测试。"
-    @Published var pairs: [PairScore] = []
-    @Published var csvURL: URL?
-    @Published var lastError: String?
-    @Published var receivedCount = 0
-    @Published var expectedCount = 0
-    @Published var logText = ""
-    @Published var logURL: URL?
-    @Published var cleanupMessage: String?
+    @Published var config: ScanRunConfig
+    @Published private(set) var isRecording = false
+    @Published private(set) var isAnalyzing = false
+    @Published private(set) var status = "选择场景，点“开始测试”；手机会同时启动手表。"
+    @Published private(set) var startedAt: Date?
+    @Published private(set) var analysis: ScanAnalysis?
+    @Published private(set) var csvURL: URL?
+    @Published private(set) var wavURL: URL?
+    @Published private(set) var scanLogURL: URL?
+    @Published private(set) var logText = ""
+    @Published private(set) var lastError: String?
+    @Published private(set) var reachable = false
+    @Published private(set) var activated = false
 
     private let capture = AudioCapture()
+    private let buffer = PCMBuffer()
     private let link = PhoneLink()
-    private let demodQueue = DispatchQueue(label: "aquaecho.demod")
-    private let recordingLock = NSLock()
-    private var recordingSamples: [Float] = []
-    private var recordingRate = 48_000.0
-    private var receiver: SignalAnalyzer.Receiver?
-    private var activeConfig = TestConfig()
-    private var didScore = false
-    private var runID = UUID()
+    private var maxTask: Task<Void, Never>?
 
     init() {
-        config = ConfigStore.load()
+        config = ScanConfigStore.load()
         link.onEnvelope = { [weak self] envelope in
-            Task { @MainActor in
-                self?.handle(envelope)
-            }
+            Task { @MainActor in self?.handle(envelope) }
         }
         link.onReachable = { [weak self] value in
-            Task { @MainActor in
-                self?.reachable = value
-            }
+            Task { @MainActor in self?.reachable = value }
         }
         link.onActivated = { [weak self] value in
-            Task { @MainActor in
-                self?.activated = value
-            }
+            Task { @MainActor in self?.activated = value }
         }
         link.activate()
-        logURL = RunLog.shared.fileURL
-        RunLog.shared.onAppend = { [weak self] _ in
-            self?.logText = RunLog.shared.text()
+        RunLog.shared.onAppend = { [weak self] line in
+            self?.logText += line
         }
-        log("应用启动。构建 \(AppBuild.number)。内嵌手表构建 \(Self.embeddedWatchBuild())。日志 \(RunLog.shared.fileURL.lastPathComponent)")
+        log("应用启动 构建 \(AppBuild.number) 日志 \(RunLog.shared.fileURL.lastPathComponent)")
     }
 
-    /// 手机包里 `Watch/AquaEchoWatch.app` 的构建号。界面上的手表数字要等配对安装完成后才会变。
-    private static func embeddedWatchBuild() -> String {
-        let plistURL = Bundle.main.bundleURL
-            .appendingPathComponent("Watch/AquaEchoWatch.app/Info.plist")
-        guard let info = NSDictionary(contentsOf: plistURL),
-              let version = info["CFBundleVersion"] as? String else {
-            return "缺失"
-        }
-        return version
+    var expectedPackets: Int {
+        config.activeSets.count * max(1, config.packetsPerSet)
     }
 
-    func reloadLog() {
-        logText = RunLog.shared.text()
-        logURL = RunLog.shared.fileURL
+    var expectedSeconds: Double {
+        ScanProtocol.expectedSeconds(for: config)
     }
+
+    var logURL: URL { RunLog.shared.fileURL }
+
+    var isRunning: Bool { isRecording }
 
     func syncConfig() {
         config = config.normalized
-        ConfigStore.save(config)
-        let delivered = link.send(WCEnvelope(kind: .config, config: config, packet: nil, packets: nil, progress: nil))
-        status = delivered ? "配置已传到 Watch。" : "Watch 还没连上。配置已保存，连接后会自动带上。"
-        lastError = nil
+        ScanConfigStore.save(config)
+        let sent = link.send(WCEnvelope(kind: .config, scanConfig: config))
+        status = sent ? "配置已发送到手表。" : "手表不可达，配置只保存在手机。"
         log(status)
     }
 
     func startTest() async {
-        guard !isRunning else { return }
+        await startRecording()
+    }
+
+    func stopTest() {
+        if isRecording {
+            _ = link.send(WCEnvelope(kind: .stop))
+            log("已请求手表停止")
+        }
+        stopAndAnalyze()
+    }
+
+    func startRecording() async {
+        guard !isRecording, !isAnalyzing else { return }
         lastError = nil
-        let config = config.normalized
-        self.config = config
-        ConfigStore.save(config)
-        guard config.frequency.candidateHighHz > config.frequency.candidateLowHz else {
-            lastError = "候选频段上限要高于下限。"
+        analysis = nil
+        csvURL = nil
+        wavURL = nil
+        scanLogURL = nil
+        config = config.normalized
+        ScanConfigStore.save(config)
+
+        let allowed = await AudioCapture.requestPermission()
+        guard allowed else {
+            lastError = "没有麦克风权限，无法录音。请到系统设置里给 AquaEcho 打开麦克风。"
             log("错误 \(lastError ?? "")")
             return
         }
-        let allowed = await AudioCapture.requestPermission()
-        guard allowed else {
-            lastError = "需要麦克风权限才能给信号打分。"
-            log("错误 \(lastError ?? "")")
-            return
+
+        buffer.reset()
+        let buffer = self.buffer
+        capture.onSamples = { chunk, _, rate in
+            buffer.append(chunk, rate: rate)
         }
         do {
             try capture.start()
         } catch {
+            capture.onSamples = nil
             lastError = error.localizedDescription
             log("错误 \(error.localizedDescription)")
             return
         }
 
-        pairs = []
-        csvURL = nil
-        receivedCount = 0
-        expectedCount = config.repeats
-        didScore = false
-        activeConfig = config
-        let live = SignalAnalyzer.Receiver(config: config, schedule: [], selectsFrequency: true)
-        live.onUpdate = { [weak self] update in
-            DispatchQueue.main.async {
-                self?.show(update)
-            }
-        }
-        live.onLog = { [weak self] line in
-            DispatchQueue.main.async {
-                self?.log(line)
-            }
-        }
-        live.onFrequency = { [weak self] fbegin, fend in
-            Task { @MainActor in
-                self?.playFeedback(fbegin: fbegin, fend: fend)
-            }
-        }
-        receiver = live
-        recordingLock.lock()
-        recordingSamples.removeAll(keepingCapacity: false)
-        recordingRate = config.sampleRate
-        recordingLock.unlock()
-        capture.onSamples = { [weak self] samples, date, rate in
-            guard let self else { return }
-            self.keepRecording(samples, sampleRate: rate)
-            self.demodQueue.async {
-                live.ingest(samples, at: date, sampleRate: rate)
-            }
-        }
-        isRunning = true
-        runID = UUID()
+        isRecording = true
+        startedAt = Date()
         UIApplication.shared.isIdleTimerDisabled = true
-        status = "正在录音，等待 Watch 播放…"
-        log("开始录音，等待 \(expectedCount) 个包")
-        let started = link.send(WCEnvelope(kind: .start, config: config, packet: nil, packets: nil, progress: nil))
-        if !started {
-            capture.onSamples = nil
-            capture.stop()
-            demodQueue.sync {}
-            isRunning = false
-            UIApplication.shared.isIdleTimerDisabled = false
-            lastError = "Watch 不可达。请先打开手表上的 AquaEcho，并保持 App 在前台。"
-            status = "未能开始。"
-            log("错误 \(lastError ?? "")")
+        log("开始录音 \(config.label) 集合=\(config.activeSets.map(\.id).joined(separator: ",")) 预计包=\(expectedPackets) 预计=\(String(format: "%.1f", expectedSeconds))s 构建=\(AppBuild.number)")
+
+        let sent = link.send(WCEnvelope(kind: .start, scanConfig: config))
+        status = sent
+            ? "录音中。手机已请求手表开始扫描；把两台设备放到测试位置。"
+            : "录音中。手表不可达，请在手表的 AquaEcho 上手动点开始扫描。"
+        log(sent ? "已请求手表开始扫描（手表日志会记录收到）" : "手表不可达：请在手表的 AquaEcho 上手动点开始扫描")
+
+        maxTask?.cancel()
+        maxTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000_000)
+            guard let self, self.isRecording else { return }
+            self.log("达到最长录音时间，自动停止并分析")
+            self.stopAndAnalyze()
         }
     }
 
-    func stopTest() {
-        guard isRunning else { return }
-        _ = link.send(WCEnvelope(kind: .stop, config: nil, packet: nil, packets: nil, progress: nil))
-        status = "正在停止，等当前这个包播完…"
-        log("请求停止发送")
-        let token = runID
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
-            guard token == self.runID, self.isRunning else { return }
-            self.beginFinish()
+    func stopAndAnalyze() {
+        guard isRecording else { return }
+        isRecording = false
+        isAnalyzing = true
+        status = "正在保存录音并分析…"
+        maxTask?.cancel()
+        maxTask = nil
+        capture.onSamples = nil
+        capture.stop()
+        UIApplication.shared.isIdleTimerDisabled = false
+
+        let (samples, rate) = buffer.snapshot()
+        let started = startedAt ?? Date()
+        let config = self.config
+        guard !samples.isEmpty else {
+            isAnalyzing = false
+            lastError = "没有录到样本。"
+            status = "没有录音数据"
+            log("错误 没有录到样本")
+            return
         }
+
+        log("停止录音 样本=\(samples.count) 采样率=\(Int(rate.rounded())) 场景=\(config.scenario.title)")
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // 先落盘 WAV：即使后续分析失败，原始录音也一定保留。
+            let wav = try? SessionRecording.write(
+                samples: samples,
+                sampleRate: rate,
+                prefix: "AquaEcho_Scan_\(config.scenario.fileTag)_"
+            )
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.wavURL = wav
+                if let wav {
+                    self.log("录音已写入 \(wav.lastPathComponent)（\(samples.count) 样本）")
+                } else {
+                    self.log("错误 WAV 写入失败")
+                }
+            }
+
+            let analysis = ScanAnalyzer.analyze(
+                samples: samples,
+                sampleRate: rate,
+                config: config,
+                startedAt: started
+            )
+            let csv = try? ScanCSVExporter.write(analysis)
+            let scanLog = try? ScanCSVExporter.writeLog(analysis)
+
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.analysis = analysis
+                self.wavURL = wav
+                self.csvURL = csv
+                self.scanLogURL = scanLog
+                self.isAnalyzing = false
+                self.status = "完成：\(analysis.overallPassed)/\(analysis.overallPackets) 通过（\(String(format: "%.1f", analysis.overallRate * 100))%）"
+                for line in analysis.logLines {
+                    RunLog.shared.append("[Scan] \(line)")
+                }
+                self.log("分析完成 \(config.label) 通过=\(analysis.overallPassed)/\(analysis.overallPackets) 成功率=\(String(format: "%.1f", analysis.overallRate * 100))% WAV=\(wav?.lastPathComponent ?? "无") CSV=\(csv?.lastPathComponent ?? "无")")
+            }
+        }
+    }
+
+    func noteScenePhase(_ phase: ScenePhase) {
+        guard phase == .background, isRecording else { return }
+        log("App 进入后台，录音可能被系统中断，自动停止并分析")
+        stopAndAnalyze()
+    }
+
+    func reloadLog() {
+        logText = RunLog.shared.text()
+    }
+
+    func clearResultFiles() {
+        let urls = RunLog.documentFiles(prefixes: ["AquaEcho_Scan_", "AquaEcho_ScanLog_"])
+        for url in urls {
+            try? FileManager.default.removeItem(at: url)
+        }
+        RunLog.shared.discardBufferedLines()
+        logText = ""
+        analysis = nil
+        csvURL = nil
+        wavURL = nil
+        scanLogURL = nil
+        status = "已清理扫描 CSV/WAV/日志"
     }
 
     private func handle(_ envelope: WCEnvelope) {
         switch envelope.kind {
-        case .config:
-            if let config = envelope.config {
-                self.config = config.normalized
-                ConfigStore.save(self.config)
-            }
-        case .requestStart:
-            Task { await startTest() }
-        case .progress:
-            if let progress = envelope.progress, isRunning {
-                status = progress
-            }
-        case .packet:
-            if let packet = envelope.packet {
-                receiver?.note(packet)
-                log("收到包 \(packet.sequence) \(HzFormat.string(packet.lowHz))/\(HzFormat.string(packet.highHz)) Hz 发送时间 \(RunLog.timestamp(packet.watchSendDate))")
+        case .finished:
+            if isRecording {
+                log("收到手表扫描完成消息，自动停止并分析")
+                stopAndAnalyze()
             }
         case .log:
             if let line = envelope.log {
@@ -192,116 +255,12 @@ final class PhoneModel: ObservableObject {
                     RunLog.shared.append(String(part))
                 }
             }
-        case .finished:
-            if let packets = envelope.packets, !packets.isEmpty {
-                for packet in packets {
-                    receiver?.note(packet)
-                }
-            }
-            if let config = envelope.config {
-                activeConfig = config.normalized
-            }
-            beginFinish()
-        case .start, .stop:
+        case .config, .start, .stop:
             break
         }
     }
 
-    private func playFeedback(fbegin: Double, fend: Double) {
-        guard isRunning else { return }
-        let config = activeConfig
-        log("选频 fbegin=\(HzFormat.string(fbegin)) fend=\(HzFormat.string(fend))，播放反馈")
-        let samples = FeedbackSignal.playback(fbegin: fbegin, fend: fend, config: config)
-        let repeats = config.repeats
-        Task { @MainActor in
-            do {
-                try await self.capture.play(samples)
-            } catch {
-                self.log("错误 \(error.localizedDescription)")
-                return
-            }
-            guard self.isRunning else { return }
-            self.log("反馈已播放")
-            self.demodQueue.async { [weak self] in
-                self?.receiver?.useSelectedBand(lowHz: fbegin, highHz: fend, repeats: repeats)
-            }
-        }
-    }
-
-    private func show(_ update: SignalAnalyzer.Receiver.Update) {
-        guard !didScore else { return }
-        receivedCount = update.processedCount
-        let packet = update.transmission.packet
-        let verdict = update.transmission.passed ? "通过" : "未通过"
-        status = "第 \(packet.sequence)/\(max(expectedCount, packet.sequence)) 包 · \(HzFormat.string(packet.lowHz))/\(HzFormat.string(packet.highHz)) Hz · \(verdict)"
-    }
-
-    private func beginFinish() {
-        guard isRunning, !didScore else { return }
-        didScore = true
-        status = "测试完成"
-        isRunning = false
-        capture.onSamples = nil
-        capture.stop()
-        demodQueue.sync {}
-        UIApplication.shared.isIdleTimerDisabled = false
-        writeRecording()
-        let scored = receiver?.finish() ?? []
-        receiver = nil
-        pairs = scored
-        receivedCount = scored.reduce(0) { $0 + $1.transmissions.count }
-        do {
-            csvURL = try CSVExporter.write(pairs: scored, mode: activeConfig.mode)
-            log("CSV 已写入 \(csvURL?.lastPathComponent ?? "")")
-            status = "测试完成"
-        } catch {
-            lastError = "评分已经算出，CSV 没有写入：\(error.localizedDescription)"
-            status = "测试完成"
-            log("错误 \(lastError ?? "")")
-        }
-    }
-
-    func clearResultFiles() {
-        let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-        for url in urls {
-            let name = url.lastPathComponent
-            let csv = name.hasPrefix("AquaEcho_Results_") && name.hasSuffix(".csv")
-            let logFile = name.hasPrefix("AquaEcho_Log_") && name.hasSuffix(".txt")
-            let recording = name.hasPrefix("AquaEcho_Recording_") && name.hasSuffix(".wav")
-            if csv || logFile || recording {
-                try? FileManager.default.removeItem(at: url)
-            }
-        }
-        csvURL = nil
-        RunLog.shared.discardBufferedLines()
-        logText = ""
-        cleanupMessage = "已清理 CSV、日志和调试录音"
-    }
-
-    private func keepRecording(_ samples: [Float], sampleRate: Double) {
-        recordingLock.lock()
-        recordingRate = sampleRate
-        recordingSamples.append(contentsOf: samples)
-        recordingLock.unlock()
-    }
-
-    private func writeRecording() {
-        recordingLock.lock()
-        let samples = recordingSamples
-        let rate = recordingRate
-        recordingSamples.removeAll(keepingCapacity: false)
-        recordingLock.unlock()
-        guard !samples.isEmpty else { return }
-        do {
-            let url = try SessionRecording.write(samples: samples, sampleRate: rate)
-            log("调试录音已写入 \(url.lastPathComponent) 采样=\(samples.count) 采样率=\(Int(rate.rounded()))")
-        } catch {
-            log("错误 调试录音没有写入：\(error.localizedDescription)")
-        }
-    }
-
     private func log(_ message: String) {
-        RunLog.shared.append("[iPhone] \(message)")
+        RunLog.shared.append("[Phone][Scan] \(message)")
     }
 }

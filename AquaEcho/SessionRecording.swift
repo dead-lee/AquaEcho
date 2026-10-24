@@ -2,14 +2,14 @@ import Foundation
 
 enum SessionRecording {
     /// 把这次测试的原始麦克风采样写成 32-bit float WAV。文件名 `AquaEcho_Recording_yyyyMMdd_HHmmss.wav`。
-    static func write(samples: [Float], sampleRate: Double, directory: URL? = nil) throws -> URL {
+    static func write(samples: [Float], sampleRate: Double, directory: URL? = nil, prefix: String = "AquaEcho_Recording_") throws -> URL {
         let folder = directory ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
         formatter.dateFormat = "yyyyMMdd_HHmmss"
-        let url = folder.appendingPathComponent("AquaEcho_Recording_\(formatter.string(from: Date())).wav")
+        let url = folder.appendingPathComponent("\(prefix)\(formatter.string(from: Date())).wav")
         let rate = UInt32(sampleRate.rounded())
         let dataBytes = samples.count * MemoryLayout<Float>.size
         var data = Data()

@@ -15,14 +15,11 @@ enum AudioCaptureError: LocalizedError {
     }
 }
 
-/// 以 measurement 模式录音，关闭自动增益，尽量保持 48 kHz。
-/// 回调拿到的是当前这一小段采样，调用方自己保留滑动窗口。
+/// 只负责录音。扫描测试的发射在手表端，手机不需要播放反馈。
 final class AudioCapture {
     var onSamples: ((_ samples: [Float], _ at: Date, _ sampleRate: Double) -> Void)?
 
     private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
-    private var playerReady = false
     private let lock = NSLock()
     private var startedAt: Date?
     private var sampleCount = 0
@@ -49,7 +46,7 @@ final class AudioCapture {
 
     func start() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker])
+        try session.setCategory(.record, mode: .measurement, options: [])
         try session.setPreferredSampleRate(48_000)
         try session.setPreferredIOBufferDuration(0.02)
         try session.setActive(true)
@@ -70,13 +67,6 @@ final class AudioCapture {
         input.installTap(onBus: 0, bufferSize: 4_096, format: format) { [weak self] buffer, time in
             self?.deliver(buffer, hostTime: time.hostTime)
         }
-        if !playerReady {
-            let playback = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
-            engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: playback)
-            player.volume = 1
-            playerReady = true
-        }
         engine.prepare()
         do {
             try engine.start()
@@ -85,35 +75,9 @@ final class AudioCapture {
             throw AudioCaptureError.engine(error.localizedDescription)
         }
         isRunning = true
-        if !player.isPlaying {
-            player.play()
-        }
-    }
-
-    func play(_ samples: [Float]) async throws {
-        guard playerReady, !samples.isEmpty else { throw AudioCaptureError.engine("反馈播放器还没有准备好。") }
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
-              let channel = buffer.floatChannelData?[0] else {
-            throw AudioCaptureError.engine("无法创建反馈缓冲。")
-        }
-        buffer.frameLength = AVAudioFrameCount(samples.count)
-        samples.withUnsafeBufferPointer { source in
-            guard let base = source.baseAddress else { return }
-            channel.update(from: base, count: samples.count)
-        }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            self.player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
-                continuation.resume()
-            }
-            if !self.player.isPlaying {
-                self.player.play()
-            }
-        }
     }
 
     func stop() {
-        player.stop()
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
