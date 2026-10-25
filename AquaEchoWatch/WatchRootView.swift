@@ -37,15 +37,21 @@ struct WatchRootView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("系统音量 \(Int((model.outputVolume * 100).rounded()))% · 软件 \(Int((model.playbackVolume * 100).rounded()))%")
+                Text("系统音量 \(Int((model.outputVolume * 100).rounded()))%")
                     .font(.caption2)
                     .foregroundStyle(model.outputVolume < 0.99 ? .orange : .secondary)
+                Text("按侧边按钮打开控制中心，把系统音量调到 100%；表冠只用于滚动。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 if model.outputVolume < 0.99 {
-                    Text("系统音量不足 100%，请在控制中心把音量调大；软件音量已是最大")
+                    Text("系统音量不足 100%，现在不会发波。")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Button("刷新系统音量") { model.refreshOutputVolume() }
+                    .font(.caption2)
 
                 if model.isRunning {
                     Button("停止", role: .destructive) {
@@ -69,18 +75,6 @@ struct WatchRootView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.vertical, 2)
-        }
-        .digitalCrownRotation(
-            $model.playbackVolume,
-            from: 0.0,
-            through: 1.0,
-            by: 0.05,
-            sensitivity: .medium,
-            isContinuous: false,
-            isHapticFeedbackEnabled: true
-        )
-        .onChange(of: model.playbackVolume) { _, _ in
-            model.applyPlaybackVolume()
         }
         .onAppear {
             model.noteScenePhase(scenePhase)
