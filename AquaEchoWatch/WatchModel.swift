@@ -186,12 +186,20 @@ final class WatchModel: ObservableObject {
     func refreshOutputVolume() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setCategory(.playback, mode: .default, policy: .longFormAudio, options: [.mixWithOthers])
             try session.setActive(true)
         } catch {
             // 读音量失败时保留上一次值；不阻塞 workout/扫描。
         }
         outputVolume = session.outputVolume
+    }
+
+    func prepareAudioSession() {
+        do {
+            try player.preparePlaybackOnly()
+        } catch {
+            log("音频会话预激活失败 \(error.localizedDescription)")
+        }
     }
 
     deinit {
@@ -217,11 +225,11 @@ final class WatchModel: ObservableObject {
     }
 
     private func handleEnterBackground() {
-        // 控制中心调音量也会触发 background；这里不能结束 workout。
-        // 真正结束由手机 App 切后台发 .endWorkout，或系统结束会话。
-        log("applicationDidEnterBackground；保留 workout（控制中心/音量调整不应结束）")
+        log("applicationDidEnterBackground；结束 workout")
         flushLogs(force: true)
-        foregroundRunning = workout.running
+        if isRunning { stop() }
+        workout.end()
+        foregroundRunning = false
         foregroundStatus = workout.status
     }
 

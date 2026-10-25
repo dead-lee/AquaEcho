@@ -36,7 +36,11 @@ final class TonePlayer {
 
     func preparePlaybackOnly() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .default, options: [])
+        do {
+            try session.setCategory(.playback, mode: .measurement, policy: .longFormAudio, options: [])
+        } catch {
+            try session.setCategory(.playback, mode: .default, policy: .longFormAudio, options: [])
+        }
         try session.setActive(true)
 
         if !attached {

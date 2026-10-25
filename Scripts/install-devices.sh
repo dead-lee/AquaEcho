@@ -1,12 +1,10 @@
 #!/bin/bash
-# 把 AquaEcho 装到已配对的 iPhone，并由手机把内嵌手表包推到手表。
+# 把 AquaEcho 增量装到已配对的 iPhone，并直接升级手表上的 AquaEchoWatch.app。
 #
-# 先增量安装。安装日志里如果是一次完成的增量（没有 skip delta），
-# 手表包不会被推送，脚本再卸掉手机应用做完整安装。完整安装会清掉
-# 手机上的日志、CSV 和录音。
-#
-# 只安装 iPhone 包。不要把 AquaEchoWatch.app 装到手表：那条链路是
-# Mac 和手表之间的 localNetwork，没有 Wi-Fi 时会失败。
+# 关键：不再为了推送手表包而卸载手机 App。卸载会清掉麦克风、HealthKit
+# 等系统授权，导致每次新装都重新申请。手机用 devicectl 覆盖安装，
+# 手表用 devicectl 直接覆盖安装；两边都保留已有授权和数据。
+# 手表直装失败时只报错，不卸载手机，避免丢权限。
 
 set -euo pipefail
 
@@ -21,9 +19,8 @@ usage() {
   cat <<EOF
 用法: Scripts/install-devices.sh [--device <iPhone UDID>] [--derived-data <路径>] [--no-build]
 
-先构建 iOS scheme（内嵌手表包），再增量安装到 iPhone。
-安装日志显示增量完成、手表包没有推送时，卸掉后做完整安装。
-卸载会清掉手机上的日志、CSV 和录音。装完后让手表解锁并靠近手机。
+先构建 iOS scheme（内嵌手表包），再增量装到 iPhone，并直接覆盖安装手表 App。
+不再卸载手机 App；手表直装失败时保留手机安装和权限，重试即可。
 EOF
 }
 
@@ -59,6 +56,7 @@ if [[ "$DEVICE" == "$WATCH_UDID" ]]; then
 fi
 
 APP="$DERIVED_DATA/Build/Products/Debug-iphoneos/AquaEcho.app"
+WATCH_APP="$DERIVED_DATA/Build/Products/Debug-watchos/AquaEchoWatch.app"
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
   echo "构建 iOS scheme，手表包会嵌进 AquaEcho.app。"
@@ -134,36 +132,29 @@ PY
   fi
 }
 
-# 增量安装成功时，Mac 日志只有 iPhone 包的 ComputedDelta，没有手表包推送。
-watch_publish_failed() {
-  if grep -q "skip delta" "$install_log"; then
-    echo "安装跳过了增量，手机会经配对推送手表包。"
+watch_install() {
+  local src="$WATCH_APP"
+  if [[ ! -d "$src" ]]; then
+    src="$APP/Watch/AquaEchoWatch.app"
+  fi
+  if [[ ! -d "$src" ]]; then
+    echo "找不到手表包: $WATCH_APP 或 $APP/Watch/AquaEchoWatch.app" >&2
     return 1
   fi
-  if grep -q "Computing delta" "$install_log" && grep -q "kIXRemoteInstallMessageTypeComplete" "$install_log"; then
-    echo "增量安装已完成，安装日志里没有手表包推送。"
-    return 0
-  fi
-  echo "安装日志里看不到增量是否完成，不把这次当成手表发布失败。"
-  return 1
+  echo "直接覆盖安装手表包（保留已有授权/数据）：$src"
+  xcrun devicectl device install app --device "$WATCH_UDID" "$src"
 }
 
 if [[ -n "$installed_version" ]]; then
-  echo "先增量安装到手机（当前构建 ${installed_version}）。"
-  install_app
-  phone_reports_version
-  if watch_publish_failed; then
-    echo "手表发布失败，改为完整安装。日志、CSV 和录音会一起删掉。"
-    xcrun devicectl device uninstall app --device "$DEVICE" "$BUNDLE_ID"
-    install_app
-    phone_reports_version
-  fi
+  echo "增量覆盖安装到手机（当前构建 ${installed_version}，不卸载）。"
 else
-  echo "手机上还没有 ${BUNDLE_ID}，直接完整安装。"
-  install_app
-  phone_reports_version
+  echo "手机上还没有 ${BUNDLE_ID}，首次安装。"
 fi
+install_app
+phone_reports_version
 rm -f "$install_log"
 
-echo "手机已装上构建 ${phone_version}，内嵌手表也是构建 ${phone_version}。"
-echo "让手表解锁并靠近手机，等配对推送完成后再看手表上的构建号。"
+watch_install
+
+echo "手机已装上构建 ${phone_version}，手表包同为构建 ${phone_version}。"
+echo "手机和手表都是覆盖安装，已有权限和数据应保留；升级后不再反复申请权限。"
