@@ -5,10 +5,11 @@ import Foundation
 final class RunLog {
     static let shared = RunLog()
 
-    let fileURL: URL
+    private(set) var fileURL: URL
     private let queue = DispatchQueue(label: "AquaEcho.RunLog")
     private var lines: [String] = []
     private var handle: FileHandle?
+    private var suspended = false
     var onAppend: ((String) -> Void)?
 
     private init() {
@@ -29,6 +30,7 @@ final class RunLog {
         let line = "\(Self.timestamp()) \(message)\n"
         queue.async { [weak self] in
             guard let self else { return }
+            guard !self.suspended else { return }
             self.lines.append(line)
             if self.handle == nil { self.openHandle() }
             if let data = line.data(using: .utf8) {
@@ -44,14 +46,44 @@ final class RunLog {
         queue.sync { lines.joined() }
     }
 
-    /// 清掉内存和文件，下一次 append 会重新创建文件。
-    func discardBufferedLines() {
+    /// 完全清理所有 AquaEcho_Log_*.txt，并在下一次测试前禁止重建日志。
+    func purgeAll() {
         queue.sync {
+            suspended = true
             try? handle?.close()
             handle = nil
             lines.removeAll()
-            try? FileManager.default.removeItem(at: fileURL)
+
+            let folder = fileURL.deletingLastPathComponent()
+            let urls = (try? FileManager.default.contentsOfDirectory(
+                at: folder,
+                includingPropertiesForKeys: nil
+            )) ?? []
+            for url in urls where url.lastPathComponent.hasPrefix("AquaEcho_Log_") && url.pathExtension == "txt" {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
+    }
+
+    /// 下一次明确开始测试时才允许创建新日志。
+    func resumeNewLogIfSuspended() {
+        queue.sync {
+            guard suspended else { return }
+            suspended = false
+            try? handle?.close()
+            handle = nil
+            lines.removeAll()
+            fileURL = makeFileURL()
+        }
+    }
+
+    private func makeFileURL() -> URL {
+        let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        return folder.appendingPathComponent("AquaEcho_Log_\(formatter.string(from: Date())).txt")
     }
 
     private func openHandle() {

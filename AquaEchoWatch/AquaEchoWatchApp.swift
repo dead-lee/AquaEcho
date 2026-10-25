@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchKit
+import HealthKit
 
 final class WatchAppDelegate: NSObject, WKApplicationDelegate {
     func applicationDidBecomeActive() {
@@ -17,6 +18,13 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate {
     func applicationDidEnterBackground() {
         Task { @MainActor in
             WatchActivation.onDidEnterBackground?()
+        }
+    }
+
+    func handle(_ workoutConfiguration: HKWorkoutConfiguration) {
+        Task { @MainActor in
+            WatchActivation.pendingWorkoutConfiguration = workoutConfiguration
+            WatchActivation.onWorkoutConfiguration?(workoutConfiguration)
         }
     }
 }

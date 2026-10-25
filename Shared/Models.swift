@@ -4,6 +4,9 @@ enum WCKind: String, Codable {
     case config
     case start
     case stop
+    case ready
+    case endWorkout
+    case workoutEnded
     case finished
     case log
 }

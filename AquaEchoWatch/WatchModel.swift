@@ -1,9 +1,9 @@
 import AVFoundation
 import Foundation
+import HealthKit
 import SwiftUI
-import WatchKit
 
-/// 手表端扫描发送器：只播放，不录音、不做反馈、不握手。
+/// 手表端扫描发送器：workout session 负责保活，音频只负责发波。
 /// 序列固定为“集合列表 × 每组包数”，每包 = 标记音 + 保护间隔 + OFDM 数据。
 @MainActor
 final class WatchModel: ObservableObject {
@@ -15,12 +15,12 @@ final class WatchModel: ObservableObject {
     @Published var outputVolume: Float = 0
     @Published var playbackVolume: Double = 1
     @Published private(set) var foregroundRunning = false
-    @Published var foregroundStatus = "正在申请前台"
+    @Published var foregroundStatus = "未开始"
     @Published private(set) var config = ScanRunConfig()
 
     private let player = TonePlayer()
     private let link = WatchLink()
-    let foreground = ForegroundSession()
+    private let workout = WorkoutKeeper()
     private var task: Task<Void, Never>?
     private var stopRequested = false
     private var pendingLogs: [String] = []
@@ -28,18 +28,27 @@ final class WatchModel: ObservableObject {
 
     init() {
         player.onLog = { [weak self] message in self?.log(message) }
-        foreground.onEvent = { [weak self] message in
+        workout.onEvent = { [weak self] message in
             guard let self else { return }
             self.log(message)
-            self.foregroundRunning = self.foreground.running
-            self.foregroundStatus = self.foreground.status
+            self.foregroundRunning = self.workout.running
+            self.foregroundStatus = self.workout.status
         }
-        foreground.onStopSound = { [weak self] reason in
-            if reason.hasPrefix("resignedFrontmost") {
-                self?.log("按数码表冠离开，停止扫描")
-                self?.stop()
-            }
+        workout.onReady = { [weak self] in
+            guard let self else { return }
+            self.foregroundRunning = true
+            self.foregroundStatus = self.workout.status
+            self.log("workout 已 running，通知手机 ready")
+            self.link.send(WCEnvelope(kind: .ready))
         }
+        workout.onEnded = { [weak self] in
+            guard let self else { return }
+            self.foregroundRunning = false
+            self.foregroundStatus = self.workout.status
+            self.log("workout 已结束")
+            self.link.send(WCEnvelope(kind: .workoutEnded))
+        }
+
         link.onEnvelope = { [weak self] envelope in
             Task { @MainActor in self?.handle(envelope) }
         }
@@ -48,6 +57,9 @@ final class WatchModel: ObservableObject {
                 self?.reachable = value
                 guard value else { return }
                 self?.flushLogs()
+                if self?.workout.running == true {
+                    self?.link.send(WCEnvelope(kind: .ready))
+                }
             }
         }
         link.activate()
@@ -56,19 +68,28 @@ final class WatchModel: ObservableObject {
         refreshOutputVolume()
 
         WatchActivation.onDidBecomeActive = { [weak self] in
-            self?.foreground.setAllowedToStart(true)
-            self?.foreground.ensureRunning()
             self?.flushLogs(force: true)
+            Task { @MainActor in await self?.workout.startIfNeeded() }
         }
         WatchActivation.onWillResignActive = { [weak self] in
-            self?.foreground.setAllowedToStart(false)
+            self?.log("applicationWillResignActive")
             self?.flushLogs(force: true)
         }
         WatchActivation.onDidEnterBackground = { [weak self] in
-            self?.flushLogs(force: true)
+            self?.handleEnterBackground()
+        }
+        WatchActivation.onWorkoutConfiguration = { [weak self] _ in
+            Task { @MainActor in
+                self?.log("收到手机 startWatchApp 的 workout 配置")
+                await self?.workout.startIfNeeded()
+            }
         }
 
         log("手表扫描端启动 构建 \(AppBuild.number)")
+        if WatchActivation.pendingWorkoutConfiguration != nil {
+            WatchActivation.pendingWorkoutConfiguration = nil
+            Task { @MainActor in await self.workout.startIfNeeded() }
+        }
     }
 
     var packetsPerSet: Int { max(1, min(200, config.packetsPerSet)) }
@@ -79,24 +100,34 @@ final class WatchModel: ObservableObject {
         guard !isRunning else { return }
         stopRequested = false
         isRunning = true
-        status = "准备播放"
+        status = "准备工作"
         progressText = "0/\(totalPackets)"
         refreshOutputVolume()
-        WKExtension.shared().isFrontmostTimeoutExtended = true
-        foreground.setAllowedToStart(true)
-        foreground.ensureRunning()
 
-        do {
-            try player.preparePlaybackOnly()
-        } catch {
-            status = "播放器启动失败：\(error.localizedDescription)"
-            log("错误 播放器启动失败 \(error.localizedDescription)")
-            isRunning = false
-            return
+        task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.workout.startIfNeeded()
+            for _ in 0..<30 {
+                if self.workout.running { break }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard self.workout.running else {
+                self.isRunning = false
+                self.status = "workout 未运行，未开始"
+                self.log("错误 workout 未运行，不能开始扫描")
+                return
+            }
+            do {
+                try self.player.preparePlaybackOnly()
+            } catch {
+                self.status = "播放器启动失败：\(error.localizedDescription)"
+                self.log("错误 播放器启动失败 \(error.localizedDescription)")
+                self.isRunning = false
+                return
+            }
+            self.log("开始扫描 \(self.config.label) 集合=\(self.sets.map(\.id).joined(separator: ",")) 每组=\(self.packetsPerSet) 总包=\(self.totalPackets) 系统音量=\(String(format: "%.2f", self.outputVolume))")
+            await self.run()
         }
-
-        log("开始扫描 \(config.label) 集合=\(sets.map(\.id).joined(separator: ",")) 每组=\(packetsPerSet) 总包=\(totalPackets) 系统音量=\(String(format: "%.2f", outputVolume))")
-        task = Task { await run() }
     }
 
     func stop() {
@@ -105,28 +136,24 @@ final class WatchModel: ObservableObject {
         task?.cancel()
         task = nil
         player.stop()
-        WKExtension.shared().isFrontmostTimeoutExtended = false
-        foreground.endBecauseUserStoppedOrLeft()
-        foregroundRunning = false
         isRunning = false
         status = "已停止"
-        log("停止扫描")
+        log("停止扫描；workout 保持")
     }
 
-    /// 扫描完成后保持前台；用户主动结束，或按数码表冠离开时调用。
+    /// 扫描完成后保持会话；只有用户主动结束，或手机/手表切到后台才结束。
     func endForeground() {
-        WKExtension.shared().isFrontmostTimeoutExtended = false
-        foreground.endBecauseUserStoppedOrLeft()
+        if isRunning { stop() }
+        workout.end()
         foregroundRunning = false
-        if !isRunning { status = "已结束前台保持" }
-        log("结束前台保持")
+        foregroundStatus = workout.status
+        status = "已结束保持"
+        log("结束 workout 保持")
     }
 
     func noteScenePhase(_ phase: ScenePhase) {
-        foreground.noteScenePhase(phase)
         if phase == .active {
-            foreground.setAllowedToStart(true)
-            foreground.ensureRunning()
+            Task { @MainActor in await workout.startIfNeeded() }
         }
     }
 
@@ -136,10 +163,10 @@ final class WatchModel: ObservableObject {
 
     func applyPlaybackVolume() {
         player.setPlaybackVolume(Float(playbackVolume))
-        foregroundStatus = foreground.status
+        foregroundStatus = workout.status
     }
 
-    /// 手表上手动开始：手机没有点开始时也能发，但手机必须同时在录音才能有结果。
+    /// 手表上手动开始扫描；手机可以稍后再开始录音。
     func requestStart() {
         guard !isRunning else { return }
         log("手表手动开始；请确认手机已开始录音")
@@ -150,6 +177,19 @@ final class WatchModel: ObservableObject {
         guard isRunning else { return }
         log("停止发送 原因=\(reason)")
         stop()
+    }
+
+    private func handleEnterBackground() {
+        log("applicationDidEnterBackground；按要求结束 workout 保持")
+        flushLogs(force: true)
+        if workout.startedRecently {
+            log("workout 启动后立即后台，忽略本次结束（通常是手机 startWatchApp 启动）")
+            return
+        }
+        if isRunning { stop() }
+        workout.end()
+        foregroundRunning = false
+        foregroundStatus = workout.status
     }
 
     private func run() async {
@@ -192,7 +232,7 @@ final class WatchModel: ObservableObject {
                 }
             }
 
-            status = "扫描完成（前台保持中）"
+            status = "扫描完成（保持会话）"
             progressText = "\(sent)/\(activeSets.count * packets)"
             log("扫描完成 共 \(sent) 包")
             link.send(WCEnvelope(kind: .finished))
@@ -207,36 +247,36 @@ final class WatchModel: ObservableObject {
         player.stop()
         isRunning = false
         task = nil
-        foregroundRunning = foreground.running
+        foregroundRunning = workout.running
+        foregroundStatus = workout.status
         refreshOutputVolume()
     }
 
     private func handle(_ envelope: WCEnvelope) {
-        if (envelope.kind == .config || envelope.kind == .start), let scan = envelope.scanConfig {
-            config = scan.normalized
-            runLabel = config.label
-            log("收到手机\(envelope.kind == .start ? "开始指令" : "配置") \(config.label)")
-            if envelope.kind == .start {
-                start()
-            } else {
+        switch envelope.kind {
+        case .config:
+            if let scan = envelope.scanConfig {
+                config = scan.normalized
+                runLabel = config.label
                 status = "已同步：\(config.scenario.title)"
+                log("收到手机配置 \(config.label)")
             }
-            return
-        }
-        if envelope.kind == .start {
+        case .start:
+            if let scan = envelope.scanConfig {
+                config = scan.normalized
+                runLabel = config.label
+                log("收到手机开始指令 \(config.label)")
+            }
             start()
-            return
-        }
-        if envelope.kind == .stop {
+        case .stop:
             stop(reason: "收到手机停止指令")
-            return
-        }
-        if envelope.kind == .config || envelope.kind == .finished {
-            return
-        }
-        if envelope.kind == .log, let line = envelope.log {
-            // 手表不消费手机日志，忽略即可。
-            _ = line
+        case .endWorkout:
+            log("收到手机结束 workout 指令")
+            endForeground()
+        case .ready, .workoutEnded, .finished:
+            break
+        case .log:
+            break
         }
     }
 
@@ -269,4 +309,6 @@ enum WatchActivation {
     static var onDidBecomeActive: (() -> Void)?
     static var onWillResignActive: (() -> Void)?
     static var onDidEnterBackground: (() -> Void)?
+    static var onWorkoutConfiguration: ((HKWorkoutConfiguration) -> Void)?
+    static var pendingWorkoutConfiguration: HKWorkoutConfiguration?
 }

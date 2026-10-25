@@ -4,6 +4,10 @@
 <dict>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSHealthShareUsageDescription</key>
+	<string>AquaEcho 需要读取 workout 会话状态，以便在测试期间保持手表前台。</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>AquaEcho 需要创建 workout 会话来保持手表 App 在测试期间处于前台。</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 </dict>

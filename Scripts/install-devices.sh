@@ -68,6 +68,7 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
       -scheme AquaEcho \
       -destination 'generic/platform=iOS' \
       -derivedDataPath "$DERIVED_DATA" \
+      -allowProvisioningUpdates \
       build >"$build_log" 2>&1; then
     tail -40 "$build_log" >&2
     echo "构建失败，完整日志在 $build_log" >&2

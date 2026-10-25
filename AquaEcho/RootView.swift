@@ -15,6 +15,9 @@ struct RootView: View {
             LogScreen()
                 .tabItem { Label("日志", systemImage: "doc.text") }
         }
+        .onAppear {
+            Task { await model.prepareWatchOnLaunch() }
+        }
         .onChange(of: scenePhase) { _, phase in
             model.noteScenePhase(phase)
         }
@@ -56,6 +59,7 @@ private struct TestScreen: View {
                 }
 
                 Section("本次") {
+                    LabeledContent("构建", value: AppBuild.number)
                     Picker("每组包数", selection: $model.config.packetsPerSet) {
                         Text("20（快筛）").tag(20)
                         Text("50（精确）").tag(50)
@@ -64,6 +68,7 @@ private struct TestScreen: View {
                     LabeledContent("预计包数", value: "\(model.expectedPackets)")
                     LabeledContent("预计时长", value: String(format: "%.1f 秒", model.expectedSeconds))
                     LabeledContent("手表", value: model.reachable ? "已连接" : (model.activated ? "未打开" : "会话未激活"))
+                    LabeledContent("Workout", value: model.watchSessionStatus)
                     if let analysis = model.analysis {
                         LabeledContent("上次通过", value: "\(analysis.overallPassed)/\(analysis.overallPackets)")
                     }

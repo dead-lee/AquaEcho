@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import HealthKit
 import SwiftUI
 import UIKit
 
@@ -45,11 +46,16 @@ final class PhoneModel: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var reachable = false
     @Published private(set) var activated = false
+    @Published private(set) var watchReady = false
+    @Published private(set) var watchSessionStatus = "未启动"
 
     private let capture = AudioCapture()
     private let buffer = PCMBuffer()
     private let link = PhoneLink()
+    private let healthStore = HKHealthStore()
     private let demodQueue = DispatchQueue(label: "aquaecho.scan.receiver")
+    private var watchLaunchRequested = false
+    private var watchLaunchInFlight = false
     private var receiver: ScanReceiver?
     private var maxTask: Task<Void, Never>?
 
@@ -91,6 +97,68 @@ final class PhoneModel: ObservableObject {
         log(status)
     }
 
+    /// 手机 App 启动就唤起手表并建立 workout 会话，降低开始测试时手表没醒来的概率。
+    func prepareWatchOnLaunch() async {
+        guard !watchLaunchInFlight else { return }
+        if watchReady { return }
+        guard HKHealthStore.isHealthDataAvailable() else {
+            watchSessionStatus = "HealthKit 不可用"
+            log("错误 HealthKit 不可用")
+            return
+        }
+        watchLaunchInFlight = true
+        watchLaunchRequested = true
+        defer { watchLaunchInFlight = false }
+
+        do {
+            try await requestHealthAuthorization()
+            syncConfig()
+            let configuration = HKWorkoutConfiguration()
+            configuration.activityType = .underwaterDiving
+            configuration.locationType = .outdoor
+            try await startWatchApp(configuration)
+            watchSessionStatus = "手表唤起中"
+            status = "已请求唤起手表并启动 workout 会话。"
+            log("已调用 startWatchApp，等待手表 ready")
+        } catch {
+            watchLaunchRequested = false
+            watchSessionStatus = "启动失败"
+            lastError = error.localizedDescription
+            status = "手表会话启动失败：\(error.localizedDescription)"
+            log("错误 startWatchApp/\(error.localizedDescription)")
+        }
+    }
+
+    private func requestHealthAuthorization() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let share: Set<HKSampleType> = [HKObjectType.workoutType()]
+            let read: Set<HKObjectType> = [HKObjectType.workoutType()]
+            healthStore.requestAuthorization(toShare: share, read: read) { success, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: NSError(domain: "AquaEcho.HealthKit", code: 1, userInfo: [NSLocalizedDescriptionKey: "HealthKit 授权被拒绝"]))
+                }
+            }
+        }
+    }
+
+    private func startWatchApp(_ configuration: HKWorkoutConfiguration) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            healthStore.startWatchApp(with: configuration) { success, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: NSError(domain: "AquaEcho.HealthKit", code: 2, userInfo: [NSLocalizedDescriptionKey: "手表 App 未能启动"]))
+                }
+            }
+        }
+    }
+
     func startTest() async {
         await startRecording()
     }
@@ -105,6 +173,7 @@ final class PhoneModel: ObservableObject {
 
     func startRecording() async {
         guard !isRecording, !isAnalyzing else { return }
+        RunLog.shared.resumeNewLogIfSuspended()
         lastError = nil
         analysis = nil
         csvURL = nil
@@ -112,6 +181,14 @@ final class PhoneModel: ObservableObject {
         scanLogURL = nil
         config = config.normalized
         ScanConfigStore.save(config)
+
+        if !watchReady {
+            await prepareWatchOnLaunch()
+            for _ in 0..<20 {
+                if watchReady { break }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
 
         let allowed = await AudioCapture.requestPermission()
         guard allowed else {
@@ -154,9 +231,11 @@ final class PhoneModel: ObservableObject {
         log("开始录音 \(config.label) 集合=\(config.activeSets.map(\.id).joined(separator: ",")) 预计包=\(expectedPackets) 预计=\(String(format: "%.1f", expectedSeconds))s 构建=\(AppBuild.number)")
 
         let sent = link.send(WCEnvelope(kind: .start, scanConfig: config))
-        status = sent
-            ? "录音中。手机已请求手表开始扫描；把两台设备放到测试位置。"
-            : "录音中。手表不可达，请在手表的 AquaEcho 上手动点开始扫描。"
+        if watchReady {
+            status = sent ? "录音中。手表 workout 已就绪，已发送开始指令。" : "录音中。手表 workout 就绪但消息未发出。"
+        } else {
+            status = "录音中。手表尚未就绪，请打开手表 AquaEcho 或检查 HealthKit 权限。"
+        }
         log(sent ? "已请求手表开始扫描（手表日志会记录收到）" : "手表不可达：请在手表的 AquaEcho 上手动点开始扫描")
 
         maxTask?.cancel()
@@ -238,9 +317,17 @@ final class PhoneModel: ObservableObject {
     }
 
     func noteScenePhase(_ phase: ScenePhase) {
-        guard phase == .background, isRecording else { return }
-        log("App 进入后台，录音可能被系统中断，自动停止")
-        stopAndAnalyze()
+        guard phase == .background else { return }
+        log("手机 App 进入后台；按要求结束手表 workout 保持")
+        if watchReady || watchLaunchRequested {
+            _ = link.send(WCEnvelope(kind: .endWorkout))
+        }
+        watchReady = false
+        watchLaunchRequested = false
+        watchSessionStatus = "已结束"
+        if isRecording {
+            stopAndAnalyze()
+        }
     }
 
     func reloadLog() {
@@ -248,21 +335,39 @@ final class PhoneModel: ObservableObject {
     }
 
     func clearResultFiles() {
+        guard !isRecording else {
+            status = "录音中不能清理，请先停止。"
+            return
+        }
         let urls = RunLog.documentFiles(prefixes: ["AquaEcho_Scan_", "AquaEcho_ScanLog_"])
         for url in urls {
             try? FileManager.default.removeItem(at: url)
         }
-        RunLog.shared.discardBufferedLines()
+        RunLog.shared.purgeAll()
         logText = ""
         analysis = nil
         csvURL = nil
         wavURL = nil
         scanLogURL = nil
-        status = "已清理扫描 CSV/WAV/日志"
+        status = "已完全清理扫描文件与所有日志"
     }
 
     private func handle(_ envelope: WCEnvelope) {
         switch envelope.kind {
+        case .ready:
+            watchReady = true
+            watchSessionStatus = "保持中"
+            log("手表 workout 已就绪")
+            if !isRecording {
+                status = "手表 workout 已就绪，可以开始测试。"
+            }
+        case .workoutEnded:
+            watchReady = false
+            watchSessionStatus = "已结束"
+            log("手表 workout 已结束")
+            if !isRecording {
+                status = "手表 workout 已结束；下次开始测试会重新唤起。"
+            }
         case .finished:
             if isRecording {
                 log("收到手表扫描完成消息，自动停止并分析")
@@ -274,7 +379,7 @@ final class PhoneModel: ObservableObject {
                     RunLog.shared.append(String(part))
                 }
             }
-        case .config, .start, .stop:
+        case .config, .start, .stop, .endWorkout:
             break
         }
     }
