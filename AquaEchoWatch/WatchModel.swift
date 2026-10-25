@@ -116,14 +116,13 @@ final class WatchModel: ObservableObject {
     func start() {
         guard !isRunning else { return }
         refreshOutputVolume()
-        guard outputVolume >= 0.99 else {
+        if outputVolume < 0.99 {
             volumeBlocked = true
-            status = "系统音量 \(Int((outputVolume * 100).rounded()))%，请先调到 100%"
-            log("拒绝发送：系统音量=\(String(format: "%.2f", outputVolume)) 未到 100%")
-            link.send(WCEnvelope(kind: .volumeLow))
-            return
+            status = "系统音量 \(Int((outputVolume * 100).rounded()))%，建议先用表冠调到 100%"
+            log("音量警告：系统音量=\(String(format: "%.2f", outputVolume)) 未到 100%，仍开始")
+        } else {
+            volumeBlocked = false
         }
-        volumeBlocked = false
         stopRequested = false
         isRunning = true
         status = "准备工作"

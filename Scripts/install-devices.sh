@@ -142,7 +142,16 @@ watch_install() {
     return 1
   fi
   echo "直接覆盖安装手表包（保留已有授权/数据）：$src"
-  xcrun devicectl device install app --device "$WATCH_UDID" "$src"
+  local attempt
+  for attempt in 1 2 3; do
+    if xcrun devicectl device install app --device "$WATCH_UDID" "$src"; then
+      return 0
+    fi
+    echo "手表安装第 ${attempt} 次失败（可能是手机正在推送手表包），等待后重试。"
+    sleep 5
+  done
+  echo "手表包仍未安装成功；手机安装和权限已保留，可直接重跑脚本。" >&2
+  return 1
 }
 
 if [[ -n "$installed_version" ]]; then
@@ -154,6 +163,8 @@ install_app
 phone_reports_version
 rm -f "$install_log"
 
+# 手机安装会同时触发手表推送；等它完成，避免与直装争同一安装协调器。
+sleep 5
 watch_install
 
 echo "手机已装上构建 ${phone_version}，手表包同为构建 ${phone_version}。"
