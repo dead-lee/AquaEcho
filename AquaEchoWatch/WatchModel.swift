@@ -13,7 +13,7 @@ final class WatchModel: ObservableObject {
     @Published private(set) var progressText = ""
     @Published private(set) var runLabel = "未同步场景"
     @Published var outputVolume: Float = 0
-    @Published var playbackVolume: Double = 1
+    @Published var playbackVolume: Double = 0.8
     @Published private(set) var foregroundRunning = false
     @Published var foregroundStatus = "未开始"
     @Published var volumeBlocked = false
@@ -66,8 +66,8 @@ final class WatchModel: ObservableObject {
             }
         }
         link.activate()
-        playbackVolume = 1
-        player.setPlaybackVolume(1)
+        playbackVolume = 0.8
+        player.setPlaybackVolume(0.8)
         refreshOutputVolume()
 
         WatchActivation.onDidBecomeActive = { [weak self] in
@@ -118,8 +118,8 @@ final class WatchModel: ObservableObject {
         refreshOutputVolume()
         if outputVolume < 0.99 {
             volumeBlocked = true
-            status = "系统音量 \(Int((outputVolume * 100).rounded()))%，建议先用表冠调到 100%"
-            log("音量警告：系统音量=\(String(format: "%.2f", outputVolume)) 未到 100%，仍开始")
+            status = "系统音量 \(Int((outputVolume * 100).rounded()))%；播放音量可用表冠调整"
+            log("音量提示：系统音量=\(String(format: "%.2f", outputVolume))；播放音量可由表冠调整，仍开始")
         } else {
             volumeBlocked = false
         }

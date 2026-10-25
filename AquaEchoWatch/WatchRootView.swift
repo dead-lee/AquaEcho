@@ -44,15 +44,15 @@ struct WatchRootView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Text("系统音量 \(Int((model.outputVolume * 100).rounded()))%")
+                    Text("播放音量 \(Int((model.playbackVolume * 100).rounded()))% · 系统 \(Int((model.outputVolume * 100).rounded()))%")
                         .font(.caption2)
-                        .foregroundStyle(model.outputVolume < 0.99 ? .orange : .secondary)
-                    Text("旋转数码表冠调系统音量；手指上下滑动界面。")
+                        .foregroundStyle(model.playbackVolume < 0.99 ? .orange : .secondary)
+                    Text("旋转表冠调播放音量；系统音量请在控制中心设置。手指上下滑动界面。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if model.outputVolume < 0.99 {
-                        Text("系统音量不足 100%，建议先用表冠调到最大。")
+                        Text("播放音量可用表冠调整；系统音量当前为 \(Int((model.outputVolume * 100).rounded()))%，需要更大请在控制中心设置。")
                             .font(.caption2)
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
@@ -83,7 +83,7 @@ struct WatchRootView: View {
                     gestureOrigin = offset
                 }
 
-                VolumeBar(volume: model.outputVolume)
+                VolumeBar(volume: model.outputVolume * Float(model.playbackVolume))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     .padding(.top, 4)
                     .padding(.trailing, 5)
@@ -103,13 +103,26 @@ struct WatchRootView: View {
                 gestureOrigin = offset
             }
         }
+        .focusable(true)
+        .digitalCrownRotation(
+            $model.playbackVolume,
+            from: 0.0,
+            through: 1.0,
+            by: 0.01,
+            sensitivity: .low,
+            isContinuous: false,
+            isHapticFeedbackEnabled: true
+        )
+        .onChange(of: model.playbackVolume) { _, _ in
+            model.applyPlaybackVolume()
+        }
         .onChange(of: scenePhase) { _, phase in
             model.noteScenePhase(phase)
         }
-        .alert("系统音量不足", isPresented: $model.volumeBlocked) {
+        .alert("音量提示", isPresented: $model.volumeBlocked) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text("请旋转数码表冠把系统音量调到 100%。当前 \(Int((model.outputVolume * 100).rounded()))%。")
+            Text("系统音量当前 \(Int((model.outputVolume * 100).rounded()))%；播放音量可以用数码表冠调整。")
         }
     }
 
