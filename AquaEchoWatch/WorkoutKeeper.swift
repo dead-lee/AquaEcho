@@ -30,7 +30,7 @@ final class WorkoutKeeper: NSObject, ObservableObject {
         onEvent?("workout 启动中")
 
         let configuration = HKWorkoutConfiguration()
-        configuration.activityType = .underwaterDiving
+        configuration.activityType = .other
         configuration.locationType = .outdoor
 
         do {

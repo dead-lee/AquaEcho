@@ -114,7 +114,7 @@ final class PhoneModel: ObservableObject {
             try await requestHealthAuthorization()
             syncConfig()
             let configuration = HKWorkoutConfiguration()
-            configuration.activityType = .underwaterDiving
+            configuration.activityType = .other
             configuration.locationType = .outdoor
             try await startWatchApp(configuration)
             watchSessionStatus = "手表唤起中"
