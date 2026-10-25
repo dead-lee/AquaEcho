@@ -310,6 +310,25 @@ final class PhoneModel: ObservableObject {
         }
     }
 
+    private func abortRecording(reason: String) {
+        guard isRecording else {
+            status = reason
+            return
+        }
+        isRecording = false
+        isAnalyzing = false
+        maxTask?.cancel()
+        maxTask = nil
+        capture.onSamples = nil
+        capture.stop()
+        UIApplication.shared.isIdleTimerDisabled = false
+        demodQueue.sync { [receiver] in _ = receiver?.finish() }
+        receiver = nil
+        lastError = reason
+        status = reason
+        log("中止录音：\(reason)")
+    }
+
     private func applyLive(_ analysis: ScanAnalysis) {
         guard isRecording else { return }
         self.analysis = analysis
@@ -368,6 +387,8 @@ final class PhoneModel: ObservableObject {
             if !isRecording {
                 status = "手表 workout 已结束；下次开始测试会重新唤起。"
             }
+        case .volumeLow:
+            abortRecording(reason: "手表系统音量未到 100%，已停止。请调大后重试。")
         case .finished:
             if isRecording {
                 log("收到手表扫描完成消息，自动停止并分析")

@@ -87,7 +87,7 @@ final class ScanReceiver {
             noiseHistory.append(power)
             if noiseHistory.count > 400 { noiseHistory.removeFirst(noiseHistory.count - 400) }
             let noise = percentile(noiseHistory, 0.20)
-            let threshold = max(noise * 5000, 1e-6)
+            let threshold = max(noise * 300, 1e-6)
 
             if power > threshold {
                 if !inRun {

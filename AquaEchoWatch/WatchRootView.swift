@@ -37,11 +37,11 @@ struct WatchRootView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("音量 \(Int((model.playbackVolume * 100).rounded()))%")
+                Text("系统音量 \(Int((model.outputVolume * 100).rounded()))% · 软件 \(Int((model.playbackVolume * 100).rounded()))%")
                     .font(.caption2)
-                    .foregroundStyle(model.playbackVolume < 0.95 ? .orange : .secondary)
-                if model.playbackVolume < 0.95 {
-                    Text("音量不足，请旋转数码表冠调到最大")
+                    .foregroundStyle(model.outputVolume < 0.99 ? .orange : .secondary)
+                if model.outputVolume < 0.99 {
+                    Text("系统音量不足 100%，请在控制中心把音量调大；软件音量已是最大")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -88,6 +88,11 @@ struct WatchRootView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             model.noteScenePhase(phase)
+        }
+        .alert("系统音量不足", isPresented: $model.volumeBlocked) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("请用控制中心把系统音量调到 100%。当前 \(Int((model.outputVolume * 100).rounded()))%。")
         }
     }
 }

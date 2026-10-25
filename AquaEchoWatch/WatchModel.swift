@@ -16,6 +16,7 @@ final class WatchModel: ObservableObject {
     @Published var playbackVolume: Double = 1
     @Published private(set) var foregroundRunning = false
     @Published var foregroundStatus = "未开始"
+    @Published var volumeBlocked = false
     @Published private(set) var config = ScanRunConfig()
 
     private let player = TonePlayer()
@@ -98,11 +99,19 @@ final class WatchModel: ObservableObject {
 
     func start() {
         guard !isRunning else { return }
+        refreshOutputVolume()
+        guard outputVolume >= 0.99 else {
+            volumeBlocked = true
+            status = "系统音量 \(Int((outputVolume * 100).rounded()))%，请先调到 100%"
+            log("拒绝发送：系统音量=\(String(format: "%.2f", outputVolume)) 未到 100%")
+            link.send(WCEnvelope(kind: .volumeLow))
+            return
+        }
+        volumeBlocked = false
         stopRequested = false
         isRunning = true
         status = "准备工作"
         progressText = "0/\(totalPackets)"
-        refreshOutputVolume()
 
         task = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -153,6 +162,7 @@ final class WatchModel: ObservableObject {
 
     func noteScenePhase(_ phase: ScenePhase) {
         if phase == .active {
+            refreshOutputVolume()
             Task { @MainActor in await workout.startIfNeeded() }
         }
     }
@@ -273,7 +283,7 @@ final class WatchModel: ObservableObject {
         case .endWorkout:
             log("收到手机结束 workout 指令")
             endForeground()
-        case .ready, .workoutEnded, .finished:
+        case .volumeLow, .ready, .workoutEnded, .finished:
             break
         case .log:
             break
