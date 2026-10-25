@@ -15,6 +15,7 @@ final class WorkoutKeeper: NSObject, ObservableObject {
 
     private let store = HKHealthStore()
     private var session: HKWorkoutSession?
+    private var builder: HKLiveWorkoutBuilder?
     private var startedAt: Date?
 
     func startIfNeeded() async {
@@ -35,12 +36,27 @@ final class WorkoutKeeper: NSObject, ObservableObject {
 
         do {
             let session = try HKWorkoutSession(healthStore: store, configuration: configuration)
+            let builder = session.associatedWorkoutBuilder()
+            builder.dataSource = HKLiveWorkoutDataSource(
+                healthStore: store,
+                workoutConfiguration: configuration
+            )
             session.delegate = self
             self.session = session
+            self.builder = builder
             self.startedAt = Date()
             session.startActivity(with: Date())
+            builder.beginCollection(withStart: Date()) { success, error in
+                Task { @MainActor in
+                    if success {
+                        self.onEvent?("workout builder beginCollection 成功")
+                    } else {
+                        self.onEvent?("错误 builder beginCollection 失败 \(error?.localizedDescription ?? "unknown")")
+                    }
+                }
+            }
             status = "workout 启动中"
-            onEvent?("已调用 startActivity，等待 running")
+            onEvent?("已调用 startActivity + beginCollection，等待 running")
         } catch {
             isStarting = false
             status = "workout 启动失败"
@@ -57,12 +73,18 @@ final class WorkoutKeeper: NSObject, ObservableObject {
             onEnded?()
             return
         }
+        if let builder {
+            builder.endCollection(withEnd: Date()) { _, _ in
+                builder.discardWorkout()
+            }
+        }
+        self.builder = nil
         session.end()
         self.session = nil
         running = false
         isStarting = false
         status = "已结束"
-        onEvent?("已调用 workout end()")
+        onEvent?("已调用 workout end() + discardWorkout")
     }
 
     /// 从后台被手机唤起后，如果系统已经结束会话，允许重建。
@@ -121,6 +143,7 @@ extension WorkoutKeeper: HKWorkoutSessionDelegate {
             self.isStarting = false
             self.status = "workout 失败"
             self.session = nil
+            self.builder = nil
             self.onEvent?("错误 workout 失败 \(error.localizedDescription)")
             self.onEnded?()
         }
