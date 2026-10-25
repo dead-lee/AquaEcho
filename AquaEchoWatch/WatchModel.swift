@@ -26,6 +26,8 @@ final class WatchModel: ObservableObject {
     private var stopRequested = false
     private var pendingLogs: [String] = []
     private var holdLogSync = false
+    private var volumeObservation: NSKeyValueObservation?
+    private var volumeTask: Task<Void, Never>?
 
     init() {
         player.onLog = { [weak self] message in self?.log(message) }
@@ -83,6 +85,20 @@ final class WatchModel: ObservableObject {
             Task { @MainActor in
                 self?.log("收到手机 startWatchApp 的 workout 配置")
                 await self?.workout.startIfNeeded()
+            }
+        }
+
+        volumeObservation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, change in
+            Task { @MainActor in
+                guard let self else { return }
+                self.outputVolume = change.newValue ?? AVAudioSession.sharedInstance().outputVolume
+            }
+        }
+        refreshOutputVolume()
+        volumeTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                self?.refreshOutputVolume()
             }
         }
 
@@ -168,7 +184,18 @@ final class WatchModel: ObservableObject {
     }
 
     func refreshOutputVolume() {
-        outputVolume = AVAudioSession.sharedInstance().outputVolume
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setActive(true)
+        } catch {
+            // 读音量失败时保留上一次值；不阻塞 workout/扫描。
+        }
+        outputVolume = session.outputVolume
+    }
+
+    deinit {
+        volumeTask?.cancel()
     }
 
     func applyPlaybackVolume() {
@@ -190,15 +217,11 @@ final class WatchModel: ObservableObject {
     }
 
     private func handleEnterBackground() {
-        log("applicationDidEnterBackground；按要求结束 workout 保持")
+        // 控制中心调音量也会触发 background；这里不能结束 workout。
+        // 真正结束由手机 App 切后台发 .endWorkout，或系统结束会话。
+        log("applicationDidEnterBackground；保留 workout（控制中心/音量调整不应结束）")
         flushLogs(force: true)
-        if workout.startedRecently {
-            log("workout 启动后立即后台，忽略本次结束（通常是手机 startWatchApp 启动）")
-            return
-        }
-        if isRunning { stop() }
-        workout.end()
-        foregroundRunning = false
+        foregroundRunning = workout.running
         foregroundStatus = workout.status
     }
 

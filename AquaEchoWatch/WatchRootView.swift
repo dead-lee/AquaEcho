@@ -50,8 +50,6 @@ struct WatchRootView: View {
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Button("刷新系统音量") { model.refreshOutputVolume() }
-                    .font(.caption2)
 
                 if model.isRunning {
                     Button("停止", role: .destructive) {
@@ -61,12 +59,6 @@ struct WatchRootView: View {
                 } else {
                     Button("开始", action: model.requestStart)
                         .buttonStyle(.borderedProminent)
-                    if model.foregroundRunning {
-                        Button("结束前台保持") {
-                            model.endForeground()
-                        }
-                        .font(.caption2)
-                    }
                 }
 
                 Text("先在 iPhone 上点“开始测试”；手机会同时请求手表开始。开始后手表只播放，不录音；结束时请保持手表在测试位置。")
