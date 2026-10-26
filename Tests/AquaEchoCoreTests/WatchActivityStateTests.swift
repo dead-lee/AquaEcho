@@ -7,7 +7,7 @@ final class WatchActivityStateTests: XCTestCase {
         XCTAssertFalse(state.canSendStart)
     }
 
-    func testActiveAllowsStartAndInactiveResetsAck() {
+    func testInactivePreservesStartedUntilReset() {
         var state = WatchActivityState()
         state.setActive(true)
         XCTAssertTrue(state.canSendStart)
@@ -15,6 +15,8 @@ final class WatchActivityStateTests: XCTestCase {
         XCTAssertTrue(state.started)
         state.setActive(false)
         XCTAssertFalse(state.canSendStart)
+        XCTAssertTrue(state.started, "中途 inactive 不应清除已 started")
+        state.resetStarted()
         XCTAssertFalse(state.started)
     }
 

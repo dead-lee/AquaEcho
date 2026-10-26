@@ -281,17 +281,25 @@ final class PhoneModel: ObservableObject {
         maxTask?.cancel()
         maxTask = nil
         capture.onSamples = nil
-        capture.stop()
         UIApplication.shared.isIdleTimerDisabled = false
         if !watchActivity.started {
             log("停止时手表尚未 started（watchActive=\(watchActivity.active)）；本轮不作为有效开始")
         }
-        let receiverForCancel = self.receiver
-        receiverForCancel?.cancel()
-        log("停止开始：capture.stop + receiver.cancel 完成，准备后台快照/接收器 finish")
 
         let receiver = self.receiver
         self.receiver = nil
+        receiver?.cancel()
+        log("停止开始：receiver.cancel 已返回，capture.stop 将派发到后台")
+
+        let capture = self.capture
+        DispatchQueue.global(qos: .userInitiated).async {
+            let begin = Date()
+            RunLog.shared.append("[Phone][Scan] capture.stop 开始")
+            capture.stop()
+            let elapsed = Date().timeIntervalSince(begin)
+            RunLog.shared.append("[Phone][Scan] capture.stop 完成 用时=\(String(format: "%.3f", elapsed))s")
+        }
+
         let buffer = self.buffer
         let started = startedAt ?? Date()
         let config = self.config

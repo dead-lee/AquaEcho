@@ -9,7 +9,6 @@ public struct WatchActivityState {
 
     public mutating func setActive(_ value: Bool) {
         active = value
-        if !value { started = false }
     }
 
     public mutating func resetStarted() {

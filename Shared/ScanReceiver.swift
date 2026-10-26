@@ -34,6 +34,7 @@ final class ScanReceiver {
     private var results: [String: ScanPacketResult] = [:]
     private var corruptEvents = 0
     private var expectedSetIndex = 0
+    private let cancelLock = NSLock()
     private var canceled = false
 
     init(config: ScanRunConfig, startedAt: Date) {
@@ -47,17 +48,24 @@ final class ScanReceiver {
 
     /// 用户停止后，队列里尚未处理的音频块直接丢弃，不再做标记/解调。
     func cancel() {
-        lock.lock()
+        cancelLock.lock()
         canceled = true
-        lock.unlock()
+        cancelLock.unlock()
+    }
+
+    private var isCanceled: Bool {
+        cancelLock.lock()
+        defer { cancelLock.unlock() }
+        return canceled
     }
 
     func ingest(_ samples: [Float], at date: Date, sampleRate: Double) {
         var logs: [String] = []
         var update: ScanAnalysis?
 
+        guard !isCanceled else { return }
         lock.lock()
-        guard !canceled else {
+        guard !isCanceled else {
             lock.unlock()
             return
         }
@@ -77,7 +85,7 @@ final class ScanReceiver {
     func finish() -> ScanAnalysis {
         var logs: [String] = []
         lock.lock()
-        let wasCanceled = canceled
+        let wasCanceled = isCanceled
         closeRun(logs: &logs)
         if !wasCanceled {
             _ = processPending(logs: &logs)
