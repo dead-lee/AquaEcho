@@ -36,7 +36,7 @@
 
 日志里会明确写出场景、距离、集合、包号、期望载荷、解出载荷和是否通过，方便直接定位是“没收到”“收到但比特错”还是“集合不适合”。
 
-停止流程会记录 `capture.stop / buffer.snapshot / receiver.finish / 写盘` 各阶段；如果主线程超过 2 秒未响应，后台 watchdog 会写 `[Phone][Main]`，用于定位界面卡死。
+停止流程会记录 `capture.stop / buffer.snapshot / receiver.finish / 写盘` 各阶段；如果主线程超过 2 秒未响应，后台 watchdog 会写 `[Phone][Main]`，用于定位界面卡死。UI 日志按 0.2 秒合流，避免每条 Scan 日志都触发主线程刷新。
 
 启动日志会记录 `watchReady / activated / reachable / pendingStart` 和每次 `start` 的发送原因、返回值；workout 启动日志会记录 `source` 和 `appState`，App 在后台时不会尝试启动 workout。
 
@@ -45,6 +45,7 @@
 ## 构建与安装
 
 - iPhone 和手表分别用 `AquaEcho` / `AquaEchoWatch` scheme 构建。
+- 纯逻辑回归测试：`swift test --scratch-path /tmp/AquaEchoTestsBuild`；覆盖 start 并发、start 重发、后台 workout 策略、日志合流、停止异步。
 - 真机安装用 `Scripts/install-devices.sh`；手机和手表都做覆盖安装，不为了推手表包卸载手机，避免清掉已有权限。
 - 手机安装后等待手表推送；仍失败时直接覆盖安装手表 App，并重试。只有持续无法安装时才考虑完整重装；完整重装会重新申请权限并可能清掉 Documents。
 

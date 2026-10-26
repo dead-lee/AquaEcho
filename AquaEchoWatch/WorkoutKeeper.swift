@@ -22,11 +22,13 @@ final class WorkoutKeeper: NSObject, ObservableObject {
     func startIfNeeded(source: String = "unknown") async {
         let appState = WKApplication.shared().applicationState
         onEvent?("workout 启动请求 source=\(source) appState=\(appState.rawValue)")
-        guard appState != .background else {
-            isStarting = false
-            running = false
-            status = "已结束（后台不启动）"
-            onEvent?("跳过 workout 启动：App 在后台 source=\(source)")
+        guard WorkoutStartPolicy.shouldStart(isBackground: appState == .background, running: running, starting: isStarting) else {
+            if appState == .background {
+                isStarting = false
+                running = false
+                status = "已结束（后台不启动）"
+                onEvent?("跳过 workout 启动：App 在后台 source=\(source)")
+            }
             return
         }
         guard HKHealthStore.isHealthDataAvailable() else {

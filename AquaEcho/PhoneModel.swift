@@ -56,8 +56,9 @@ final class PhoneModel: ObservableObject {
     private let demodQueue = DispatchQueue(label: "aquaecho.scan.receiver")
     private var watchLaunchRequested = false
     private var watchLaunchInFlight = false
-    private var pendingStart = false
-    private var isStarting = false
+    private var startRetry = StartRetryState()
+    private var startAdmission = StartAdmission()
+    private let logBatcher = LogUIBatcher()
     private let mainWatchdog = MainThreadWatchdog()
     private var receiver: ScanReceiver?
     private var maxTask: Task<Void, Never>?
@@ -72,8 +73,8 @@ final class PhoneModel: ObservableObject {
                 guard let self else { return }
                 let old = self.reachable
                 self.reachable = value
-                self.log("WCSession reachable \(old) → \(value)（activated=\(self.activated), watchReady=\(self.watchReady), pendingStart=\(self.pendingStart), recording=\(self.isRecording)）")
-                if value && self.isRecording && self.pendingStart {
+                self.log("WCSession reachable \(old) → \(value)（activated=\(self.activated), watchReady=\(self.watchReady), pendingStart=\(self.startRetry.pending), recording=\(self.isRecording)）")
+                if value && self.isRecording && self.startRetry.pending {
                     self.sendStart(reason: "reachable")
                 }
             }
@@ -82,15 +83,18 @@ final class PhoneModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.activated = value
-                self.log("WCSession activated=\(value)（reachable=\(self.reachable), watchReady=\(self.watchReady), pendingStart=\(self.pendingStart), recording=\(self.isRecording)）")
-                if value && self.isRecording && self.pendingStart {
+                self.log("WCSession activated=\(value)（reachable=\(self.reachable), watchReady=\(self.watchReady), pendingStart=\(self.startRetry.pending), recording=\(self.isRecording)）")
+                if value && self.isRecording && self.startRetry.pending {
                     self.sendStart(reason: "activated")
                 }
             }
         }
         link.activate()
+        logBatcher.onFlush = { [weak self] text in
+            self?.logText = text
+        }
         RunLog.shared.onAppend = { [weak self] line in
-            self?.logText += line
+            self?.logBatcher.append(line)
         }
         log("应用启动 构建 \(AppBuild.number) 日志 \(RunLog.shared.fileURL.lastPathComponent)")
     }
@@ -190,12 +194,12 @@ final class PhoneModel: ObservableObject {
     }
 
     func startRecording() async {
-        guard !isRecording, !isAnalyzing, !isStarting else {
-            log("忽略重复开始：recording=\(isRecording), analyzing=\(isAnalyzing), starting=\(isStarting)")
+        guard !isRecording, !isAnalyzing, startAdmission.tryBegin() else {
+            log("忽略重复开始：recording=\(isRecording), analyzing=\(isAnalyzing), starting=\(startAdmission.isActive)")
             return
         }
-        isStarting = true
-        defer { isStarting = false }
+        defer { startAdmission.end() }
+        startRetry.clear()
         RunLog.shared.resumeNewLogIfSuspended()
         lastError = nil
         analysis = nil
@@ -270,7 +274,7 @@ final class PhoneModel: ObservableObject {
         guard isRecording else { return }
         isRecording = false
         isAnalyzing = true
-        pendingStart = false
+        startRetry.clear()
         status = "正在保存录音…"
         maxTask?.cancel()
         maxTask = nil
@@ -284,19 +288,29 @@ final class PhoneModel: ObservableObject {
         let buffer = self.buffer
         let started = startedAt ?? Date()
         let config = self.config
-        demodQueue.async { [weak self] in
-            let begin = Date()
-            RunLog.shared.append("[Phone][Scan] 后台停止阶段开始：buffer.snapshot")
-            let (samples, rate) = buffer.snapshot()
-            RunLog.shared.append("[Phone][Scan] buffer.snapshot 完成 samples=\(samples.count) rate=\(Int(rate.rounded()))")
-            RunLog.shared.append("[Phone][Scan] receiver.finish 开始")
-            let final = receiver?.finish()
-            let elapsed = Date().timeIntervalSince(begin)
-            RunLog.shared.append("[Phone][Scan] receiver.finish 完成 用时=\(String(format: "%.3f", elapsed))s")
-            DispatchQueue.main.async {
-                self?.finishAnalysis(final: final, samples: samples, rate: rate, started: started, config: config)
+        StopHandoff.run(
+            queue: demodQueue,
+            snapshot: {
+                let begin = Date()
+                RunLog.shared.append("[Phone][Scan] 后台停止阶段开始：buffer.snapshot")
+                let (samples, rate) = buffer.snapshot()
+                let elapsed = Date().timeIntervalSince(begin)
+                RunLog.shared.append("[Phone][Scan] buffer.snapshot 完成 samples=\(samples.count) rate=\(Int(rate.rounded())) 用时=\(String(format: "%.3f", elapsed))s")
+                return (samples, rate)
+            },
+            finish: { payload in
+                let begin = Date()
+                RunLog.shared.append("[Phone][Scan] receiver.finish 开始")
+                let final = receiver?.finish()
+                let elapsed = Date().timeIntervalSince(begin)
+                RunLog.shared.append("[Phone][Scan] receiver.finish 完成 用时=\(String(format: "%.3f", elapsed))s")
+                return (final, payload.0, payload.1)
+            },
+            completion: { result in
+                let (final, samples, rate) = result
+                self.finishAnalysis(final: final, samples: samples, rate: rate, started: started, config: config)
             }
-        }
+        )
     }
 
     private func finishAnalysis(final: ScanAnalysis?, samples: [Float], rate: Double, started: Date, config: ScanRunConfig) {
@@ -350,15 +364,14 @@ final class PhoneModel: ObservableObject {
     @discardableResult
     private func sendStart(reason: String) -> Bool {
         let sent = link.send(WCEnvelope(kind: .start, scanConfig: config))
-        let state = "watchReady=\(watchReady), activated=\(activated), reachable=\(reachable), recording=\(isRecording)"
+        startRetry.record(sent: sent)
+        let state = "watchReady=\(watchReady), activated=\(activated), reachable=\(reachable), recording=\(isRecording), pending=\(startRetry.pending)"
         log("发送 start reason=\(reason) 结果=\(sent ? "成功" : "失败")（\(state)）")
         if sent {
-            pendingStart = false
             status = watchReady
                 ? "录音中。手表已就绪，开始指令已发送。"
                 : "录音中。开始指令已发送，等待手表就绪。"
         } else {
-            pendingStart = true
             status = "录音中。手表连接未就绪，已排队；ready/连接恢复后自动补发开始。"
             log("start 未发出：已进入 pendingStart，等待 ready/activated/reachable 后自动重发")
         }
@@ -372,7 +385,7 @@ final class PhoneModel: ObservableObject {
         }
         isRecording = false
         isAnalyzing = false
-        pendingStart = false
+        startRetry.clear()
         maxTask?.cancel()
         maxTask = nil
         capture.onSamples = nil
@@ -402,7 +415,7 @@ final class PhoneModel: ObservableObject {
         }
         watchReady = false
         watchLaunchRequested = false
-        pendingStart = false
+        startRetry.clear()
         watchSessionStatus = "已结束"
         if isRecording {
             stopAndAnalyze()
@@ -410,7 +423,7 @@ final class PhoneModel: ObservableObject {
     }
 
     func reloadLog() {
-        logText = RunLog.shared.text()
+        logBatcher.setText(RunLog.shared.text())
     }
 
     func clearResultFiles() {
@@ -423,7 +436,7 @@ final class PhoneModel: ObservableObject {
             try? FileManager.default.removeItem(at: url)
         }
         RunLog.shared.purgeAll()
-        logText = ""
+        logBatcher.clear()
         analysis = nil
         csvURL = nil
         wavURL = nil
@@ -436,9 +449,9 @@ final class PhoneModel: ObservableObject {
         case .ready:
             watchReady = true
             watchSessionStatus = "保持中"
-            log("收到 ready（recording=\(isRecording), pendingStart=\(pendingStart), activated=\(activated), reachable=\(reachable)）")
+            log("收到 ready（recording=\(isRecording), pendingStart=\(startRetry.pending), activated=\(activated), reachable=\(reachable)）")
             if isRecording {
-                if pendingStart {
+                if startRetry.pending {
                     _ = sendStart(reason: "ready")
                 }
             } else {
@@ -446,7 +459,7 @@ final class PhoneModel: ObservableObject {
             }
         case .workoutEnded:
             watchReady = false
-            pendingStart = false
+            startRetry.clear()
             watchSessionStatus = "已结束"
             log("手表 workout 已结束")
             if !isRecording {
