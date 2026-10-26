@@ -34,6 +34,7 @@ final class ScanReceiver {
     private var results: [String: ScanPacketResult] = [:]
     private var corruptEvents = 0
     private var expectedSetIndex = 0
+    private var canceled = false
 
     init(config: ScanRunConfig, startedAt: Date) {
         let normalized = config.normalized
@@ -44,11 +45,22 @@ final class ScanReceiver {
         self.maxDataSamples = (normalized.activeSets.map { ScanProtocol.plan(for: $0).packetSamples }.max() ?? 0) + 480
     }
 
+    /// 用户停止后，队列里尚未处理的音频块直接丢弃，不再做标记/解调。
+    func cancel() {
+        lock.lock()
+        canceled = true
+        lock.unlock()
+    }
+
     func ingest(_ samples: [Float], at date: Date, sampleRate: Double) {
         var logs: [String] = []
         var update: ScanAnalysis?
 
         lock.lock()
+        guard !canceled else {
+            lock.unlock()
+            return
+        }
         if self.sampleRate == 0 { self.sampleRate = sampleRate }
         window.append(contentsOf: samples)
         detectMarkers(logs: &logs)
@@ -65,8 +77,11 @@ final class ScanReceiver {
     func finish() -> ScanAnalysis {
         var logs: [String] = []
         lock.lock()
+        let wasCanceled = canceled
         closeRun(logs: &logs)
-        _ = processPending(logs: &logs)
+        if !wasCanceled {
+            _ = processPending(logs: &logs)
+        }
         let analysis = build(finishedAt: Date())
         lock.unlock()
         for line in logs { onLog?(line) }

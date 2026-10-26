@@ -36,7 +36,9 @@
 
 日志里会明确写出场景、距离、集合、包号、期望载荷、解出载荷和是否通过，方便直接定位是“没收到”“收到但比特错”还是“集合不适合”。
 
-停止流程会记录 `capture.stop / buffer.snapshot / receiver.finish / 写盘` 各阶段；如果主线程超过 2 秒未响应，后台 watchdog 会写 `[Phone][Main]`，用于定位界面卡死。UI 日志按 0.2 秒合流，避免每条 Scan 日志都触发主线程刷新。
+停止流程会记录 `capture.stop / receiver.cancel / buffer.snapshot / receiver.finish / 写盘` 各阶段；停止后积压的 ingest 直接丢弃，不再继续解调。如果主线程超过 2 秒未响应，后台 watchdog 会写 `[Phone][Main]`。UI 日志按 0.2 秒合流，避免每条 Scan 日志都触发主线程刷新。
+
+手表会发送 `watchActive / watchInactive / started`：只有 App active 时手机才发 start，只有收到 started 才认为真正开始。
 
 启动日志会记录 `watchReady / activated / reachable / pendingStart` 和每次 `start` 的发送原因、返回值；workout 启动日志会记录 `source` 和 `appState`，App 在后台时不会尝试启动 workout。
 

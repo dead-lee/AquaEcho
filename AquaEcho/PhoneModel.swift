@@ -47,6 +47,7 @@ final class PhoneModel: ObservableObject {
     @Published private(set) var reachable = false
     @Published private(set) var activated = false
     @Published private(set) var watchReady = false
+    @Published private(set) var watchActivity = WatchActivityState()
     @Published private(set) var watchSessionStatus = "未启动"
 
     private let capture = AudioCapture()
@@ -200,6 +201,7 @@ final class PhoneModel: ObservableObject {
         }
         defer { startAdmission.end() }
         startRetry.clear()
+        watchActivity.resetStarted()
         RunLog.shared.resumeNewLogIfSuspended()
         lastError = nil
         analysis = nil
@@ -281,7 +283,12 @@ final class PhoneModel: ObservableObject {
         capture.onSamples = nil
         capture.stop()
         UIApplication.shared.isIdleTimerDisabled = false
-        log("停止开始：capture.stop 完成，准备后台快照/接收器 finish")
+        if !watchActivity.started {
+            log("停止时手表尚未 started（watchActive=\(watchActivity.active)）；本轮不作为有效开始")
+        }
+        let receiverForCancel = self.receiver
+        receiverForCancel?.cancel()
+        log("停止开始：capture.stop + receiver.cancel 完成，准备后台快照/接收器 finish")
 
         let receiver = self.receiver
         self.receiver = nil
@@ -363,9 +370,15 @@ final class PhoneModel: ObservableObject {
 
     @discardableResult
     private func sendStart(reason: String) -> Bool {
+        guard watchActivity.canSendStart else {
+            startRetry.record(sent: false)
+            status = "录音中。等待手表 App 激活；激活后自动发送开始。"
+            log("start 延后：watchActive=false（watchReady=\(watchReady), activated=\(activated), reachable=\(reachable)）")
+            return false
+        }
         let sent = link.send(WCEnvelope(kind: .start, scanConfig: config))
         startRetry.record(sent: sent)
-        let state = "watchReady=\(watchReady), activated=\(activated), reachable=\(reachable), recording=\(isRecording), pending=\(startRetry.pending)"
+        let state = "watchActive=\(watchActivity.active), watchStarted=\(watchActivity.started), watchReady=\(watchReady), activated=\(activated), reachable=\(reachable), recording=\(isRecording), pending=\(startRetry.pending)"
         log("发送 start reason=\(reason) 结果=\(sent ? "成功" : "失败")（\(state)）")
         if sent {
             status = watchReady
@@ -393,6 +406,7 @@ final class PhoneModel: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = false
         let oldReceiver = receiver
         receiver = nil
+        oldReceiver?.cancel()
         demodQueue.async {
             _ = oldReceiver?.finish()
         }
@@ -449,13 +463,29 @@ final class PhoneModel: ObservableObject {
         case .ready:
             watchReady = true
             watchSessionStatus = "保持中"
-            log("收到 ready（recording=\(isRecording), pendingStart=\(startRetry.pending), activated=\(activated), reachable=\(reachable)）")
+            log("收到 ready（recording=\(isRecording), pendingStart=\(startRetry.pending), active=\(watchActivity.active), started=\(watchActivity.started), reachable=\(reachable)）")
             if isRecording {
                 if startRetry.pending {
                     _ = sendStart(reason: "ready")
                 }
             } else {
                 status = "手表 workout 已就绪，可以开始测试。"
+            }
+        case .watchActive:
+            watchActivity.setActive(true)
+            watchSessionStatus = "保持中"
+            log("收到 watchActive（recording=\(isRecording), pendingStart=\(startRetry.pending), ready=\(watchReady)）")
+            if isRecording && startRetry.pending {
+                _ = sendStart(reason: "watchActive")
+            }
+        case .watchInactive:
+            watchActivity.setActive(false)
+            log("收到 watchInactive（recording=\(isRecording), pendingStart=\(startRetry.pending)）")
+        case .started:
+            watchActivity.markStarted()
+            log("收到 started ack（recording=\(isRecording), active=\(watchActivity.active)）")
+            if isRecording {
+                status = "录音中。手表已开始扫描。"
             }
         case .workoutEnded:
             watchReady = false
