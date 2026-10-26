@@ -1,18 +1,33 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<document type="com.apple.InterfaceBuilder.WatchKit.Storyboard" version="3.0" toolsVersion="27100" targetRuntime="watchKit" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" colorMatched="YES" initialViewController="stage0-controller">
+<document type="com.apple.InterfaceBuilder.WatchKit.Storyboard" version="3.0" toolsVersion="27100" targetRuntime="watchKit" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" colorMatched="YES" initialViewController="watch-controller">
     <dependencies>
         <plugIn identifier="com.apple.InterfaceBuilder.WatchKit.IBWatchKitPlugin" version="27100"/>
     </dependencies>
     <scenes>
-        <scene sceneID="stage0-scene">
+        <scene sceneID="watch-scene">
             <objects>
-                <controller id="stage0-controller" customClass="WatchInterfaceController" customModule="AquaEchoWatch" customModuleProvider="target">
+                <controller id="watch-controller" customClass="WatchInterfaceController" customModule="AquaEchoWatch" customModuleProvider="target">
                     <items>
-                        <label id="stage0-label" text="Stage 1 Volume" alignment="left" textAlignment="left" numberOfLines="0"/>
-                        <volumeControlView id="stage0-volume" origin="local"/>
+                        <label id="title-label" text="AquaEcho" alignment="left" textAlignment="left" numberOfLines="0"/>
+                        <volumeControlView id="volume-control" origin="local"/>
+                        <label id="foreground-label" text="前台状态" alignment="left" textAlignment="left" numberOfLines="0"/>
+                        <label id="reachable-label" text="iPhone" alignment="left" textAlignment="left" numberOfLines="0"/>
+                        <label id="run-label" text="未同步场景" alignment="left" textAlignment="left" numberOfLines="0"/>
+                        <label id="sets-label" text="" alignment="left" textAlignment="left" numberOfLines="0"/>
+                        <label id="status-label" text="等待手机同步场景" alignment="left" textAlignment="left" numberOfLines="0"/>
+                        <label id="progress-label" text="" alignment="left" textAlignment="left" numberOfLines="0"/>
+                        <label id="volume-label" text="系统音量" alignment="left" textAlignment="left" numberOfLines="0"/>
                     </items>
                     <connections>
-                        <outlet property="volumeControl" destination="stage0-volume" id="stage0-volume-outlet"/>
+                        <outlet property="titleLabel" destination="title-label" id="o-title"/>
+                        <outlet property="foregroundLabel" destination="foreground-label" id="o-foreground"/>
+                        <outlet property="reachableLabel" destination="reachable-label" id="o-reachable"/>
+                        <outlet property="runLabel" destination="run-label" id="o-run"/>
+                        <outlet property="setsLabel" destination="sets-label" id="o-sets"/>
+                        <outlet property="statusLabel" destination="status-label" id="o-status"/>
+                        <outlet property="progressLabel" destination="progress-label" id="o-progress"/>
+                        <outlet property="volumeLabel" destination="volume-label" id="o-volume"/>
+                        <outlet property="volumeControl" destination="volume-control" id="o-volume-control"/>
                     </connections>
                 </controller>
             </objects>

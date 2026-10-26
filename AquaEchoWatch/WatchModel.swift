@@ -116,8 +116,8 @@ final class WatchModel: ObservableObject {
         refreshOutputVolume()
         if outputVolume < 0.99 {
             volumeBlocked = true
-            status = "系统音量 \(Int((outputVolume * 100).rounded()))%；播放音量可用表冠调整"
-            log("音量提示：系统音量=\(String(format: "%.2f", outputVolume))；播放音量可由表冠调整，仍开始")
+            status = "系统音量 \(Int((outputVolume * 100).rounded()))%；请用表冠调整系统音量"
+            log("音量提示：系统音量=\(String(format: "%.2f", outputVolume))；请用表冠调整系统音量，仍开始")
         } else {
             volumeBlocked = false
         }

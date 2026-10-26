@@ -375,7 +375,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AquaEcho/AquaEcho.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEcho/Info.plist;
@@ -411,7 +411,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AquaEcho/AquaEcho.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEcho/Info.plist;
@@ -447,11 +447,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AquaEchoWatch/AquaEchoWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEchoWatch/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = AquaEcho;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "AquaEcho 需要读取 workout 会话状态，以便在测试期间保持手表前台。";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "AquaEcho 需要创建 workout 会话来保持手表 App 在测试期间处于前台。";
 				INFOPLIST_KEY_WKApplication = YES;
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.deadlee.AquaEcho;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -479,11 +481,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AquaEchoWatch/AquaEchoWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEchoWatch/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = AquaEcho;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "AquaEcho 需要读取 workout 会话状态，以便在测试期间保持手表前台。";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "AquaEcho 需要创建 workout 会话来保持手表 App 在测试期间处于前台。";
 				INFOPLIST_KEY_WKApplication = YES;
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.deadlee.AquaEcho;
 				LD_RUNPATH_SEARCH_PATHS = (

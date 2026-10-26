@@ -1,6 +1,6 @@
 # AquaEcho 设计基线
 
-最后更新：2026-10-26（Stage 0/1 已验证）
+最后更新：2026-10-26（Stage 0/1/2 已验证）
 
 本文是代码修改的权威依据。任何代码改动前，必须先更新本文；代码 review、自测、真机安装都以本文为准。
 
@@ -93,11 +93,12 @@
 - 模拟器显示原生扬声器控件，`willActivate` 的 `focus()` 日志正常；
 - 真机系统音量验证放到 Stage 3。
 
-### Stage 2：迁 UI/后端
+### Stage 2：迁 UI/后端（模拟器通过）
 
-- WatchInterfaceController 接 `WatchModel`；
+- `WatchInterfaceController` 接 `WatchModel`；
 - 保留 workout/HealthKit/WatchConnectivity；
 - 手机开始/停止、完成消息、后台结束；
+- 音量控件移到标题下方，页面可滚动；
 - 四 tab/录音/结果/清理不动。
 
 ### Stage 3：构建与安装
