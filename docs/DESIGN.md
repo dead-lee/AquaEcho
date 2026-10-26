@@ -1,6 +1,6 @@
 # AquaEcho 设计基线
 
-最后更新：2026-10-26（Stage 0/1/2 已验证）
+最后更新：2026-10-26（Stage 3 修正音量焦点）
 
 本文是代码修改的权威依据。任何代码改动前，必须先更新本文；代码 review、自测、真机安装都以本文为准。
 
@@ -51,6 +51,9 @@
 - HealthKit/workout-processing entitlement 保留在 watch app target。
 - `WKInterfaceVolumeControl(origin: .local)` 放在 storyboard；用户聚焦该控件时表冠调系统音量。
 - 页面默认允许手指滚动；进入音量控件时 `focus()`，离开时 `resignFocus()`。
+- **Stage 3 实测 29：表冠滚页面，说明一次性 `willActivate.focus()` 没有稳定获得焦点。**
+- 修正：增加显式“调节音量”按钮；点击后 `focus()`，并在页面激活后 0.5 s/1.5 s 重试；界面明确提示“先点音量，再转表冠”。
+- 不得用 `.digitalCrownRotation` 抢回表冠；焦点失败只能继续修 WatchKit 控件。
 - 不再存在 `.digitalCrownRotation`、`playbackVolume`、自定义 `VolumeBar`。
 
 ### 4.3 前台/会话
@@ -103,6 +106,7 @@
 
 ### Stage 3：构建与安装
 
-- build 29；
+- build 29 已安装；实测表冠滚页面，音量控件未获得焦点；
+- build 30：显式“调节音量”按钮 + 延迟 focus 重试；
 - 覆盖安装；手表失败时按用户授权全量重装；
 - 完成第 6 节验收并更新 README。
