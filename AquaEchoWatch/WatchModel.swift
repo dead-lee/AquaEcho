@@ -69,8 +69,9 @@ final class WatchModel: ObservableObject {
         refreshOutputVolume()
 
         WatchActivation.onDidBecomeActive = { [weak self] in
+            self?.log("AppDelegate applicationDidBecomeActive")
             self?.flushLogs(force: true)
-            Task { @MainActor in await self?.workout.startIfNeeded() }
+            Task { @MainActor in await self?.workout.startIfNeeded(source: "appDidBecomeActive") }
         }
         WatchActivation.onWillResignActive = { [weak self] in
             self?.log("applicationWillResignActive")
@@ -82,7 +83,7 @@ final class WatchModel: ObservableObject {
         WatchActivation.onWorkoutConfiguration = { [weak self] _ in
             Task { @MainActor in
                 self?.log("收到手机 startWatchApp 的 workout 配置")
-                await self?.workout.startIfNeeded()
+                await self?.workout.startIfNeeded(source: "workoutConfiguration")
             }
         }
 
@@ -103,7 +104,7 @@ final class WatchModel: ObservableObject {
         log("手表扫描端启动 构建 \(AppBuild.number)")
         if WatchActivation.pendingWorkoutConfiguration != nil {
             WatchActivation.pendingWorkoutConfiguration = nil
-            Task { @MainActor in await self.workout.startIfNeeded() }
+            Task { @MainActor in await self.workout.startIfNeeded(source: "pendingWorkout") }
         }
     }
 
@@ -128,7 +129,7 @@ final class WatchModel: ObservableObject {
 
         task = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.workout.startIfNeeded()
+            await self.workout.startIfNeeded(source: "phoneStart")
             for _ in 0..<30 {
                 if self.workout.running { break }
                 try? await Task.sleep(nanoseconds: 100_000_000)
@@ -175,8 +176,9 @@ final class WatchModel: ObservableObject {
 
     func noteScenePhase(_ phase: ScenePhase) {
         if phase == .active {
+            log("scenePhase active")
             refreshOutputVolume()
-            Task { @MainActor in await workout.startIfNeeded() }
+            Task { @MainActor in await workout.startIfNeeded(source: "scenePhaseActive") }
         }
     }
 

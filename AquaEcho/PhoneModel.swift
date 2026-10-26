@@ -56,6 +56,7 @@ final class PhoneModel: ObservableObject {
     private let demodQueue = DispatchQueue(label: "aquaecho.scan.receiver")
     private var watchLaunchRequested = false
     private var watchLaunchInFlight = false
+    private var pendingStart = false
     private var receiver: ScanReceiver?
     private var maxTask: Task<Void, Never>?
 
@@ -65,10 +66,25 @@ final class PhoneModel: ObservableObject {
             Task { @MainActor in self?.handle(envelope) }
         }
         link.onReachable = { [weak self] value in
-            Task { @MainActor in self?.reachable = value }
+            Task { @MainActor in
+                guard let self else { return }
+                let old = self.reachable
+                self.reachable = value
+                self.log("WCSession reachable \(old) → \(value)（activated=\(self.activated), watchReady=\(self.watchReady), pendingStart=\(self.pendingStart), recording=\(self.isRecording)）")
+                if value && self.isRecording && self.pendingStart {
+                    self.sendStart(reason: "reachable")
+                }
+            }
         }
         link.onActivated = { [weak self] value in
-            Task { @MainActor in self?.activated = value }
+            Task { @MainActor in
+                guard let self else { return }
+                self.activated = value
+                self.log("WCSession activated=\(value)（reachable=\(self.reachable), watchReady=\(self.watchReady), pendingStart=\(self.pendingStart), recording=\(self.isRecording)）")
+                if value && self.isRecording && self.pendingStart {
+                    self.sendStart(reason: "activated")
+                }
+            }
         }
         link.activate()
         RunLog.shared.onAppend = { [weak self] line in
@@ -182,6 +198,7 @@ final class PhoneModel: ObservableObject {
         config = config.normalized
         ScanConfigStore.save(config)
 
+        log("准备开始：watchReady=\(watchReady), activated=\(activated), reachable=\(reachable)")
         if !watchReady {
             await prepareWatchOnLaunch()
             for _ in 0..<20 {
@@ -189,6 +206,7 @@ final class PhoneModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
         }
+        log("准备结束：watchReady=\(watchReady), activated=\(activated), reachable=\(reachable)")
 
         let allowed = await AudioCapture.requestPermission()
         guard allowed else {
@@ -230,13 +248,7 @@ final class PhoneModel: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = true
         log("开始录音 \(config.label) 集合=\(config.activeSets.map(\.id).joined(separator: ",")) 预计包=\(expectedPackets) 预计=\(String(format: "%.1f", expectedSeconds))s 构建=\(AppBuild.number)")
 
-        let sent = link.send(WCEnvelope(kind: .start, scanConfig: config))
-        if watchReady {
-            status = sent ? "录音中。手表 workout 已就绪，已发送开始指令。" : "录音中。手表 workout 就绪但消息未发出。"
-        } else {
-            status = "录音中。手表尚未就绪，请打开手表 AquaEcho 或检查 HealthKit 权限。"
-        }
-        log(sent ? "已请求手表开始扫描（手表日志会记录收到）" : "手表不可达：请在手表的 AquaEcho 上手动点开始扫描")
+        _ = sendStart(reason: "userStart")
 
         maxTask?.cancel()
         maxTask = Task { @MainActor [weak self] in
@@ -251,6 +263,7 @@ final class PhoneModel: ObservableObject {
         guard isRecording else { return }
         isRecording = false
         isAnalyzing = true
+        pendingStart = false
         status = "正在保存录音…"
         maxTask?.cancel()
         maxTask = nil
@@ -310,6 +323,24 @@ final class PhoneModel: ObservableObject {
         }
     }
 
+    @discardableResult
+    private func sendStart(reason: String) -> Bool {
+        let sent = link.send(WCEnvelope(kind: .start, scanConfig: config))
+        let state = "watchReady=\(watchReady), activated=\(activated), reachable=\(reachable), recording=\(isRecording)"
+        log("发送 start reason=\(reason) 结果=\(sent ? "成功" : "失败")（\(state)）")
+        if sent {
+            pendingStart = !watchReady
+            status = watchReady
+                ? "录音中。手表已就绪，开始指令已发送。"
+                : "录音中。开始指令已发送，等待手表就绪。"
+        } else {
+            pendingStart = true
+            status = "录音中。手表连接未就绪，已排队；ready/连接恢复后自动补发开始。"
+            log("start 未发出：已进入 pendingStart，等待 ready/activated/reachable 后自动重发")
+        }
+        return sent
+    }
+
     private func abortRecording(reason: String) {
         guard isRecording else {
             status = reason
@@ -317,6 +348,7 @@ final class PhoneModel: ObservableObject {
         }
         isRecording = false
         isAnalyzing = false
+        pendingStart = false
         maxTask?.cancel()
         maxTask = nil
         capture.onSamples = nil
@@ -343,6 +375,7 @@ final class PhoneModel: ObservableObject {
         }
         watchReady = false
         watchLaunchRequested = false
+        pendingStart = false
         watchSessionStatus = "已结束"
         if isRecording {
             stopAndAnalyze()
@@ -376,12 +409,17 @@ final class PhoneModel: ObservableObject {
         case .ready:
             watchReady = true
             watchSessionStatus = "保持中"
-            log("手表 workout 已就绪")
-            if !isRecording {
+            log("收到 ready（recording=\(isRecording), pendingStart=\(pendingStart), activated=\(activated), reachable=\(reachable)）")
+            if isRecording {
+                if pendingStart {
+                    _ = sendStart(reason: "ready")
+                }
+            } else {
                 status = "手表 workout 已就绪，可以开始测试。"
             }
         case .workoutEnded:
             watchReady = false
+            pendingStart = false
             watchSessionStatus = "已结束"
             log("手表 workout 已结束")
             if !isRecording {

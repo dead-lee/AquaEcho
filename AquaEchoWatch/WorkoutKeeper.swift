@@ -1,5 +1,6 @@
 import Foundation
 import HealthKit
+import WatchKit
 
 /// 手表端保活：workout-processing 后台会话。
 /// 只负责让 App 在低腕/熄屏后仍是前台 App；不保存 workout 数据，不碰音频。
@@ -18,7 +19,16 @@ final class WorkoutKeeper: NSObject, ObservableObject {
     private var builder: HKLiveWorkoutBuilder?
     private var startedAt: Date?
 
-    func startIfNeeded() async {
+    func startIfNeeded(source: String = "unknown") async {
+        let appState = WKApplication.shared().applicationState
+        onEvent?("workout 启动请求 source=\(source) appState=\(appState.rawValue)")
+        guard appState != .background else {
+            isStarting = false
+            running = false
+            status = "已结束（后台不启动）"
+            onEvent?("跳过 workout 启动：App 在后台 source=\(source)")
+            return
+        }
         guard HKHealthStore.isHealthDataAvailable() else {
             status = "HealthKit 不可用"
             onEvent?("错误：HealthKit 不可用")
@@ -90,7 +100,7 @@ final class WorkoutKeeper: NSObject, ObservableObject {
     /// 从后台被手机唤起后，如果系统已经结束会话，允许重建。
     func recoverIfNeeded() async {
         guard !running, !isStarting else { return }
-        await startIfNeeded()
+        await startIfNeeded(source: "recoverIfNeeded")
     }
 
     var startedRecently: Bool {
