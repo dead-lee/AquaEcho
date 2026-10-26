@@ -1,6 +1,6 @@
 # AquaEcho 设计基线
 
-最后更新：2026-10-26（34：停止取消接收 + active/ack）
+最后更新：2026-10-26（35：started 保留 + 停止不阻塞）
 
 本文是代码修改的权威依据。任何代码改动前，必须先更新本文；代码 review、自测、真机安装都以本文为准。
 
@@ -46,6 +46,8 @@
 - `watchReady` 只代表 workout ready，不代表 App active；手机不得仅凭 watchReady 发 start。
 - 手表在 `willActivate` 发 `.watchActive`，`didDeactivate` 发 `.watchInactive`；真正开始播放时发 `.started`。
 - 手机只有 `watchActive=true` 才允许发 start；收到 `.started` 才认为开始成功。停止早于 `.started` 的轮次不得当作有效测试。
+- **`watchInactive` 不得清除 `started`**；`started` 只在新一轮开始或停止时清空，避免中途抬腕/熄屏误判。
+- **停止流程不得在主线程调用 `capture.stop()` 或等待 `receiver.cancel()`**；capture.stop 派发到后台，cancel 使用独立锁快速返回。
 
 ### 4.3 主线程响应与停止流程
 
@@ -115,6 +117,8 @@
 5. **停止异步**：`StopHandoff`，停止调用必须立即返回，慢 finish 不得阻塞调用线程。
 6. **停止取消接收**：`ScanReceiver.cancel()` 后 ingest 不得继续处理；finish 不处理 pending。
 7. **watch active/ack**：inactive 时不得发 start；started 前停止不得标记成功。
+8. **inactive 保留 started**：中途 inactive 后 active，不得丢失 started。
+9. **停止快速返回**：capture.stop 不阻塞主线程；cancel 不等待接收锁。
 
 测试命令：`swift test`。
 
