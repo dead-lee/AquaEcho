@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder.WatchKit.Storyboard" version="3.0" toolsVersion="27100" targetRuntime="watchKit" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" colorMatched="YES" initialViewController="stage0-controller">
+    <dependencies>
+        <plugIn identifier="com.apple.InterfaceBuilder.WatchKit.IBWatchKitPlugin" version="27100"/>
+    </dependencies>
+    <scenes>
+        <scene sceneID="stage0-scene">
+            <objects>
+                <controller id="stage0-controller" customClass="WatchInterfaceController" customModule="AquaEchoWatch" customModuleProvider="target">
+                    <items>
+                        <label id="stage0-label" text="Stage 0 WatchKit" alignment="left" textAlignment="left" numberOfLines="0"/>
+                    </items>
+                </controller>
+            </objects>
+        </scene>
+    </scenes>
+</document>

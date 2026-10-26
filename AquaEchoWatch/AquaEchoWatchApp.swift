@@ -29,7 +29,7 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate {
     }
 }
 
-@main
+// @main
 struct AquaEchoWatchApp: App {
     @StateObject private var model = WatchModel()
     @WKApplicationDelegateAdaptor(WatchAppDelegate.self) private var appDelegate

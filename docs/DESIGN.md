@@ -1,6 +1,6 @@
 # AquaEcho 设计基线
 
-最后更新：2026-10-26
+最后更新：2026-10-26（Stage 0 已验证）
 
 本文是代码修改的权威依据。任何代码改动前，必须先更新本文；代码 review、自测、真机安装都以本文为准。
 
@@ -42,10 +42,13 @@
 
 `WKInterfaceVolumeControl` 只能放在 WatchKit storyboard。当前 single-target SwiftUI watch app 没有该容器，因此目标结构为：
 
-- `AquaEchoWatch`：Watch app 容器，包含 `Interface.storyboard` 和资源；`WKApplication=YES`，`WKMainStoryboardName=Interface`。
-- 新增 `AquaEchoWatchExtension`：WatchKit extension，包含 `WatchInterfaceController`、`WatchModel`、`WorkoutKeeper`、`TonePlayer`；`WKAppBundleIdentifier=com.deadlee.AquaEcho.watchkitapp`。
+- 采用**单 target WatchKit app**（Stage 0 已验证）：
+  - `AquaEchoWatch` 同时包含 storyboard、`WatchInterfaceController`、`WatchModel`、`WorkoutKeeper`、`TonePlayer`；
+  - `main.swift` 调用 `WKApplicationMain(..., WatchAppDelegate)` 作为入口；
+  - `Info.plist` 设置 `WKApplication=YES`、`WKMainStoryboardName=Interface`；
+  - 不需要单独的 WatchKit extension target；`WKApplicationMain` 让 storyboard 在 simulator/真机启动。
 - 手机 App 仍嵌入 `AquaEchoWatch`；companion 关系不变。
-- HealthKit/workout-processing entitlement 放在 watch extension；手表 App 只负责容器/资源。
+- HealthKit/workout-processing entitlement 保留在 watch app target。
 - `WKInterfaceVolumeControl(origin: .local)` 放在 storyboard；用户聚焦该控件时表冠调系统音量。
 - 页面默认允许手指滚动；进入音量控件时 `focus()`，离开时 `resignFocus()`。
 - 不再存在 `.digitalCrownRotation`、`playbackVolume`、自定义 `VolumeBar`。
@@ -77,11 +80,12 @@
 
 ## 7. 分阶段实施
 
-### Stage 0：WatchKit 容器可行性
+### Stage 0：WatchKit 容器可行性（已完成 2026-10-26）
 
-- 建立最小 `Interface.storyboard` + `WKInterfaceController` + WatchKit extension。
-- 在模拟器确认能启动，且 storyboard 中 `WKInterfaceVolumeControl` 能显示/聚焦。
-- 如果当前 target 结构无法承载 storyboard，停止并记录错误；不得改回 SwiftUI 软件音量。
+- 建立最小 `Interface.storyboard` + `WatchInterfaceController`；
+- `main.swift` 使用 `WKApplicationMain`；
+- 模拟器已启动并显示 `Stage 0 WatchKit`；
+- 结论：单 target WatchKit app 可行，不需要 extension；下一步 Stage 1 放 `WKInterfaceVolumeControl`。
 
 ### Stage 1：音量控件
 
