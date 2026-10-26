@@ -57,6 +57,8 @@ final class PhoneModel: ObservableObject {
     private var watchLaunchRequested = false
     private var watchLaunchInFlight = false
     private var pendingStart = false
+    private var isStarting = false
+    private let mainWatchdog = MainThreadWatchdog()
     private var receiver: ScanReceiver?
     private var maxTask: Task<Void, Never>?
 
@@ -188,7 +190,12 @@ final class PhoneModel: ObservableObject {
     }
 
     func startRecording() async {
-        guard !isRecording, !isAnalyzing else { return }
+        guard !isRecording, !isAnalyzing, !isStarting else {
+            log("忽略重复开始：recording=\(isRecording), analyzing=\(isAnalyzing), starting=\(isStarting)")
+            return
+        }
+        isStarting = true
+        defer { isStarting = false }
         RunLog.shared.resumeNewLogIfSuspended()
         lastError = nil
         analysis = nil
@@ -270,13 +277,29 @@ final class PhoneModel: ObservableObject {
         capture.onSamples = nil
         capture.stop()
         UIApplication.shared.isIdleTimerDisabled = false
+        log("停止开始：capture.stop 完成，准备后台快照/接收器 finish")
 
-        let (samples, rate) = buffer.snapshot()
+        let receiver = self.receiver
+        self.receiver = nil
+        let buffer = self.buffer
         let started = startedAt ?? Date()
         let config = self.config
-        let final = demodQueue.sync { [receiver] in receiver?.finish() }
-        self.receiver = nil
+        demodQueue.async { [weak self] in
+            let begin = Date()
+            RunLog.shared.append("[Phone][Scan] 后台停止阶段开始：buffer.snapshot")
+            let (samples, rate) = buffer.snapshot()
+            RunLog.shared.append("[Phone][Scan] buffer.snapshot 完成 samples=\(samples.count) rate=\(Int(rate.rounded()))")
+            RunLog.shared.append("[Phone][Scan] receiver.finish 开始")
+            let final = receiver?.finish()
+            let elapsed = Date().timeIntervalSince(begin)
+            RunLog.shared.append("[Phone][Scan] receiver.finish 完成 用时=\(String(format: "%.3f", elapsed))s")
+            DispatchQueue.main.async {
+                self?.finishAnalysis(final: final, samples: samples, rate: rate, started: started, config: config)
+            }
+        }
+    }
 
+    private func finishAnalysis(final: ScanAnalysis?, samples: [Float], rate: Double, started: Date, config: ScanRunConfig) {
         guard !samples.isEmpty else {
             isAnalyzing = false
             lastError = "没有录到样本。"
@@ -302,6 +325,7 @@ final class PhoneModel: ObservableObject {
         log("实时解码结束 通过=\(analysis.overallPassed)/\(analysis.overallPackets) 成功率=\(String(format: "%.1f", analysis.overallRate * 100))%")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            RunLog.shared.append("[Phone][Scan] 写盘开始：WAV/CSV/ScanLog")
             let wav = try? SessionRecording.write(
                 samples: samples,
                 sampleRate: rate,
@@ -329,7 +353,7 @@ final class PhoneModel: ObservableObject {
         let state = "watchReady=\(watchReady), activated=\(activated), reachable=\(reachable), recording=\(isRecording)"
         log("发送 start reason=\(reason) 结果=\(sent ? "成功" : "失败")（\(state)）")
         if sent {
-            pendingStart = !watchReady
+            pendingStart = false
             status = watchReady
                 ? "录音中。手表已就绪，开始指令已发送。"
                 : "录音中。开始指令已发送，等待手表就绪。"
@@ -354,8 +378,11 @@ final class PhoneModel: ObservableObject {
         capture.onSamples = nil
         capture.stop()
         UIApplication.shared.isIdleTimerDisabled = false
-        demodQueue.sync { [receiver] in _ = receiver?.finish() }
+        let oldReceiver = receiver
         receiver = nil
+        demodQueue.async {
+            _ = oldReceiver?.finish()
+        }
         lastError = reason
         status = reason
         log("中止录音：\(reason)")
@@ -445,5 +472,52 @@ final class PhoneModel: ObservableObject {
 
     private func log(_ message: String) {
         RunLog.shared.append("[Phone][Scan] \(message)")
+    }
+}
+
+/// 只在后台队列计时，主线程阻塞时仍能写日志；不能反过来阻塞主线程。
+private final class MainThreadWatchdog {
+    private let queue = DispatchQueue(label: "AquaEcho.MainThreadWatchdog")
+    private let lock = NSLock()
+    private var lastBeat = Date()
+    private var reported = false
+    private var timer: DispatchSourceTimer?
+
+    init() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let elapsed = Date().timeIntervalSince(self.lastBeat)
+            let alreadyReported = self.reported
+            self.lock.unlock()
+
+            if elapsed > 2 {
+                if !alreadyReported {
+                    self.lock.lock()
+                    self.reported = true
+                    self.lock.unlock()
+                    RunLog.shared.append("[Phone][Main] 主线程超过 \(String(format: "%.1f", elapsed)) 秒未响应")
+                }
+            } else if elapsed < 0.5 {
+                self.lock.lock()
+                self.reported = false
+                self.lock.unlock()
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.lock.lock()
+                self.lastBeat = Date()
+                self.lock.unlock()
+            }
+        }
+        timer.resume()
+        self.timer = timer
+    }
+
+    deinit {
+        timer?.cancel()
     }
 }
