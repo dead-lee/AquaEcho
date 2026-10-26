@@ -1,6 +1,6 @@
 # AquaEcho 设计基线
 
-最后更新：2026-10-26（Stage 3 修正音量焦点）
+最后更新：2026-10-26（31：启动重发/诊断/后台 guard）
 
 本文是代码修改的权威依据。任何代码改动前，必须先更新本文；代码 review、自测、真机安装都以本文为准。
 
@@ -29,16 +29,32 @@
 - 手机 `ScanReceiver` 流式处理；结果实时更新。
 - 已知弱项：S3（4–8 kHz）在 08:20 实测为 7/20；整体 124/140（88.6%）。S3 单独评估，不作为全局失败。
 
-## 4. 音量与前台（A 方案）
+## 4. 启动、重发与诊断
 
-### 4.1 必须达到
+### 4.1 start 发送
+
+- 手机开始录音时先记录 `watchReady / activated / reachable`；
+- `send(.start)` 失败（WCSession 未激活/不可达）时不得再写“请手动点开始”；
+- 进入 `pendingStart`，在收到手表 `.ready`、`onActivated(true)` 或 `onReachable(true)` 时自动重发；
+- 重发成功后清除 pending；重复 `.start` 由手表 `isRunning` 幂等忽略；
+- 日志必须记录每次发送的 `reason / 返回值 / watchReady / activated / reachable`。
+
+### 4.2 workout 启动
+
+- `WorkoutKeeper.startIfNeeded(source:)` 必须记录来源；
+- 若 `WKApplication.shared().applicationState == .background`，直接跳过并记录 `source`，不得尝试启动；
+- 调用来源包括：`appDidBecomeActive`、`workoutConfiguration`、`phoneStart`、`scenePhaseActive`、`pendingWorkout`、`recover`。
+
+## 5. 音量与前台（A 方案）
+
+### 5.1 必须达到
 
 - 手表 App 内用数码表冠调**系统输出音量**，和 Apple Podcasts/Music 一样。
 - 音量反馈只允许**系统原生 HUD**；App 不再自绘音量条。
 - 手指上下滑动页面；表冠不被 App 自绘控件抢占。
 - 扫描完成后保持 workout；用户切到后台才结束。
 
-### 4.2 实现结构
+### 5.2 实现结构
 
 `WKInterfaceVolumeControl` 只能放在 WatchKit storyboard。当前 single-target SwiftUI watch app 没有该容器，因此目标结构为：
 
@@ -56,14 +72,14 @@
 - 不得用 `.digitalCrownRotation` 抢回表冠；焦点失败只能继续修 WatchKit 控件。
 - 不再存在 `.digitalCrownRotation`、`playbackVolume`、自定义 `VolumeBar`。
 
-### 4.3 前台/会话
+### 5.3 前台/会话
 
 - 手表 `WorkoutKeeper` 启动 workout；扫描完成不结束。
 - `applicationDidEnterBackground` 结束 workout；`applicationWillResignActive` 不结束。
 - 手机切后台发 `.endWorkout`；手表直接结束。
 - 不使用 Control Center 作为音量路径；不使用 5 秒延时猜测。
 
-## 5. 当前代码与设计差距（2026-10-26 review）
+## 6. 当前代码与设计差距（2026-10-26 review）
 
 - 28 删除了自定义 `VolumeBar`，但同时删除了表冠控制，未实现 `WKInterfaceVolumeControl`；表冠没有任何接收者。**不符合 4.1/4.2。**
 - 28 的 `WatchRootView` 是 SwiftUI single-target；没有 WatchKit storyboard/extension。**不符合 4.2。**
@@ -71,7 +87,7 @@
 - 27 的绿色系统 HUD + 橙色自定义条是两个来源叠加；已删除自定义条，但系统 HUD 的控制层没有补上。**符合“只留一条”的目标，但控制层缺失。**
 - 其余壳子/实时接收器/清理逻辑与本设计一致，待 A 完成后再做一次全量回归。
 
-## 6. 修改与验收流程
+## 7. 修改与验收流程
 
 1. 改代码前更新本文件的“最后更新”和相关章节。
 2. `git diff` 对照本文件逐条 review；不得引入第 3 条之外的新方案。
@@ -81,7 +97,7 @@
 4. 构建 device 版；手机/手表覆盖安装；只要手表直装反复失败，才全量重装。
 5. 每轮更新 README 的对应说明。
 
-## 7. 分阶段实施
+## 8. 分阶段实施
 
 ### Stage 0：WatchKit 容器可行性（已完成 2026-10-26）
 
