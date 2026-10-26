@@ -13,6 +13,7 @@ final class WatchInterfaceController: WKInterfaceController {
     @IBOutlet private weak var progressLabel: WKInterfaceLabel!
     @IBOutlet private weak var volumeLabel: WKInterfaceLabel!
     @IBOutlet private weak var volumeControl: WKInterfaceVolumeControl!
+    @IBOutlet private weak var volumeHintLabel: WKInterfaceLabel!
 
     private var model: WatchModel!
     private var cancellable: AnyCancellable?
@@ -32,12 +33,26 @@ final class WatchInterfaceController: WKInterfaceController {
         model.prepareAudioSession()
         model.refreshOutputVolume()
         render()
-        volumeControl.focus()
+        scheduleVolumeFocus()
     }
 
     override func didDeactivate() {
         volumeControl.resignFocus()
         super.didDeactivate()
+    }
+
+    @IBAction private func focusVolume() {
+        volumeControl.focus()
+        print("Stage3 volume focus requested by button")
+    }
+
+    private func scheduleVolumeFocus() {
+        for delay in [0.5, 1.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.volumeControl.focus()
+                print("Stage3 volume auto-focus after \(delay)s")
+            }
+        }
     }
 
     private func render() {
@@ -50,5 +65,6 @@ final class WatchInterfaceController: WKInterfaceController {
         statusLabel.setText(model.status)
         progressLabel.setText(model.progressText)
         volumeLabel.setText("系统音量 \(Int((model.outputVolume * 100).rounded()))%")
+        volumeHintLabel.setText("先点“调节音量”，再转表冠；手指滑动页面。")
     }
 }

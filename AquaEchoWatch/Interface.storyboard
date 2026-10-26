@@ -10,6 +10,12 @@
                     <items>
                         <label id="title-label" text="AquaEcho" alignment="left" textAlignment="left" numberOfLines="0"/>
                         <volumeControlView id="volume-control" origin="local"/>
+                        <button id="volume-focus-button" title="调节音量">
+                            <connections>
+                                <action selector="focusVolume" destination="watch-controller" eventType="touchUpInside" id="a-focus-volume"/>
+                            </connections>
+                        </button>
+                        <label id="volume-hint" text="先点“调节音量”，再转表冠；手指滑动页面。" alignment="left" textAlignment="left" numberOfLines="0"/>
                         <label id="foreground-label" text="前台状态" alignment="left" textAlignment="left" numberOfLines="0"/>
                         <label id="reachable-label" text="iPhone" alignment="left" textAlignment="left" numberOfLines="0"/>
                         <label id="run-label" text="未同步场景" alignment="left" textAlignment="left" numberOfLines="0"/>
@@ -28,6 +34,7 @@
                         <outlet property="progressLabel" destination="progress-label" id="o-progress"/>
                         <outlet property="volumeLabel" destination="volume-label" id="o-volume"/>
                         <outlet property="volumeControl" destination="volume-control" id="o-volume-control"/>
+                        <outlet property="volumeHintLabel" destination="volume-hint" id="o-volume-hint"/>
                     </connections>
                 </controller>
             </objects>
