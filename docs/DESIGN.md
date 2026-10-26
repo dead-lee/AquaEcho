@@ -1,6 +1,6 @@
 # AquaEcho 设计基线
 
-最后更新：2026-10-26（33：失败 case 测试 + 日志合流）
+最后更新：2026-10-26（34：停止取消接收 + active/ack）
 
 本文是代码修改的权威依据。任何代码改动前，必须先更新本文；代码 review、自测、真机安装都以本文为准。
 
@@ -39,7 +39,15 @@
 - 重发成功后清除 pending；重复 `.start` 由手表 `isRunning` 幂等忽略；
 - 日志必须记录每次发送的 `reason / 返回值 / watchReady / activated / reachable`。
 
-### 4.2 主线程响应与停止流程
+### 4.2 停止取消与手表 active
+
+- 用户停止后，`ScanReceiver.cancel()` 立即置位；所有尚在队列中的 `ingest` 必须直接返回，不得继续解调积压。
+- `finish()` 在取消状态下只构建已完成的 results，不再调用 `processPending` 处理积压。
+- `watchReady` 只代表 workout ready，不代表 App active；手机不得仅凭 watchReady 发 start。
+- 手表在 `willActivate` 发 `.watchActive`，`didDeactivate` 发 `.watchInactive`；真正开始播放时发 `.started`。
+- 手机只有 `watchActive=true` 才允许发 start；收到 `.started` 才认为开始成功。停止早于 `.started` 的轮次不得当作有效测试。
+
+### 4.3 主线程响应与停止流程
 
 - 主线程不得用 `demodQueue.sync` 等待接收器；停止/收尾必须在后台队列异步执行，再回主线程更新 UI。
 - `stopAndAnalyze` 必须分阶段记录：停止请求、capture.stop、buffer.snapshot、receiver.finish 请求/完成、分析构建、WAV/CSV 写盘。
@@ -105,6 +113,8 @@
 3. **后台 workout 策略**：`WorkoutStartPolicy`，background 必须拒绝启动。
 4. **日志 UI 合流**：`LogUIBatcher`，大量日志只能触发有限次数 UI 更新，且保留尾部内容。
 5. **停止异步**：`StopHandoff`，停止调用必须立即返回，慢 finish 不得阻塞调用线程。
+6. **停止取消接收**：`ScanReceiver.cancel()` 后 ingest 不得继续处理；finish 不处理 pending。
+7. **watch active/ack**：inactive 时不得发 start；started 前停止不得标记成功。
 
 测试命令：`swift test`。
 
