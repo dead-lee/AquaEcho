@@ -1,6 +1,6 @@
 # AquaEcho 实施进度
 
-最后更新：2026-10-26 16:06 +08:00
+最后更新：2026-10-26 16:10 +08:00
 
 ## 说明
 
@@ -12,7 +12,7 @@
 
 - 设计基线：`docs/DESIGN.md` 已落盘并提交。
 - 真机版本：手机 28、手表 28。
-- 31：start 重发、连接状态诊断、workout source + 后台 guard 已完成；模拟器自测通过；待真机覆盖安装。
+- 31：start 重发、连接状态诊断、workout source + 后台 guard 已完成；手机/手表均 31 已覆盖安装；待真机行为验证。
 - A 音量：按用户要求暂不修改。
 - 当前 28 不含系统音量控制；表冠无接收者，不能作为 A 的结果。
 
@@ -22,7 +22,7 @@
 - [x] Stage 1：storyboard 放 `WKInterfaceVolumeControl`；模拟器显示/聚焦通过（真机系统音量待 Stage 3）
 - [x] Stage 2：迁 UI/后端，保留 workout/手指滚动/后台结束（模拟器显示正常）
 - [x] Stage 3：build 31，start 重发 + 诊断 + 后台 guard；模拟器通过
-- [ ] Stage 4：真机安装/验证
+- [ ] Stage 4：真机验证 start 重发 / 后台 guard
 - [ ] Stage 4：真机验收（系统 HUD、手指滚动、清理、安装/权限）
 
 ## 更新规则
