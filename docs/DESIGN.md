@@ -1,6 +1,6 @@
 # AquaEcho 设计基线
 
-最后更新：2026-10-26（31：启动重发/诊断/后台 guard）
+最后更新：2026-10-26（32：主线程不可阻塞/死机诊断）
 
 本文是代码修改的权威依据。任何代码改动前，必须先更新本文；代码 review、自测、真机安装都以本文为准。
 
@@ -39,7 +39,16 @@
 - 重发成功后清除 pending；重复 `.start` 由手表 `isRunning` 幂等忽略；
 - 日志必须记录每次发送的 `reason / 返回值 / watchReady / activated / reachable`。
 
-### 4.2 workout 启动
+### 4.2 主线程响应与停止流程
+
+- 主线程不得用 `demodQueue.sync` 等待接收器；停止/收尾必须在后台队列异步执行，再回主线程更新 UI。
+- `stopAndAnalyze` 必须分阶段记录：停止请求、capture.stop、buffer.snapshot、receiver.finish 请求/完成、分析构建、WAV/CSV 写盘。
+- 增加 main-thread watchdog：后台计时器每 1 s 探测主线程；延迟超过 2 s 写 `[Phone][Main]` 日志，不能在主线程写。
+- `abortRecording` 不得同步等待接收器。
+- `startRecording` 必须有 `isStarting` 门闩，防止并发进入；重复点击只记录“忽略重复开始”。
+- `pendingStart` 只由 `send(.start)` 的返回值决定：`pendingStart = !sent`；`watchReady` 只用于诊断，不应制造 pending。
+
+### 4.3 workout 启动
 
 - `WorkoutKeeper.startIfNeeded(source:)` 必须记录来源；
 - 若 `WKApplication.shared().applicationState == .background`，直接跳过并记录 `source`，不得尝试启动；
