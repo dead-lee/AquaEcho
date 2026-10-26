@@ -8,8 +8,12 @@
             <objects>
                 <controller id="stage0-controller" customClass="WatchInterfaceController" customModule="AquaEchoWatch" customModuleProvider="target">
                     <items>
-                        <label id="stage0-label" text="Stage 0 WatchKit" alignment="left" textAlignment="left" numberOfLines="0"/>
+                        <label id="stage0-label" text="Stage 1 Volume" alignment="left" textAlignment="left" numberOfLines="0"/>
+                        <volumeControlView id="stage0-volume" origin="local"/>
                     </items>
+                    <connections>
+                        <outlet property="volumeControl" destination="stage0-volume" id="stage0-volume-outlet"/>
+                    </connections>
                 </controller>
             </objects>
         </scene>

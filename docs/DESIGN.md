@@ -1,6 +1,6 @@
 # AquaEcho 设计基线
 
-最后更新：2026-10-26（Stage 0 已验证）
+最后更新：2026-10-26（Stage 0/1 已验证）
 
 本文是代码修改的权威依据。任何代码改动前，必须先更新本文；代码 review、自测、真机安装都以本文为准。
 
@@ -87,11 +87,11 @@
 - 模拟器已启动并显示 `Stage 0 WatchKit`；
 - 结论：单 target WatchKit app 可行，不需要 extension；下一步 Stage 1 放 `WKInterfaceVolumeControl`。
 
-### Stage 1：音量控件
+### Stage 1：音量控件（模拟器通过）
 
-- storyboard 放 `WKInterfaceVolumeControl(origin: .local)`。
-- 实现 `focus`/`resignFocus` 和手指滚动。
-- 真机确认表冠只控制系统音量，并只出现一个原生 HUD。
+- storyboard 使用 `<volumeControlView>`，outlet 已连接；
+- 模拟器显示原生扬声器控件，`willActivate` 的 `focus()` 日志正常；
+- 真机系统音量验证放到 Stage 3。
 
 ### Stage 2：迁 UI/后端
 
