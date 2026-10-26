@@ -340,6 +340,11 @@ private struct LogScreen: View {
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Button("一键清理扫描文件", role: .destructive) {
+                        model.clearResultFiles()
+                    }
+                }
                 Section("当前日志") {
                     if model.logText.isEmpty {
                         Text("还没有日志").foregroundStyle(.secondary)
@@ -358,9 +363,6 @@ private struct LogScreen: View {
                         ShareLink(item: url) {
                             Text(url.lastPathComponent).font(.caption)
                         }
-                    }
-                    Button("一键清理扫描文件", role: .destructive) {
-                        model.clearResultFiles()
                     }
                 }
             }

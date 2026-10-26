@@ -13,7 +13,6 @@ final class WatchModel: ObservableObject {
     @Published private(set) var progressText = ""
     @Published private(set) var runLabel = "未同步场景"
     @Published var outputVolume: Float = 0
-    @Published var playbackVolume: Double = 0.8
     @Published private(set) var foregroundRunning = false
     @Published var foregroundStatus = "未开始"
     @Published var volumeBlocked = false
@@ -66,8 +65,7 @@ final class WatchModel: ObservableObject {
             }
         }
         link.activate()
-        playbackVolume = 0.8
-        player.setPlaybackVolume(0.8)
+        player.setPlaybackVolume(1)
         refreshOutputVolume()
 
         WatchActivation.onDidBecomeActive = { [weak self] in
@@ -203,11 +201,6 @@ final class WatchModel: ObservableObject {
 
     deinit {
         volumeTask?.cancel()
-    }
-
-    func applyPlaybackVolume() {
-        player.setPlaybackVolume(Float(playbackVolume))
-        foregroundStatus = workout.status
     }
 
     /// 手表上手动开始扫描；手机可以稍后再开始录音。
