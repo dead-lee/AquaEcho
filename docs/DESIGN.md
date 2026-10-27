@@ -55,6 +55,59 @@
 - 静音、0/140、包丢失都是有效测试结果；结果只由声波包决定，不由配对状态决定。
 
 
+
+## 10. watercomms PHY 对齐
+
+### 10.1 已缓存参考
+
+`Reference/watercomms/`，commit `efa5e21a2406d3c6d6c029f14b27fc201d148bd5`，含：
+- `naiser3.txt`：9360 样本 = 195 ms 前导；
+- `Matlab_Decoder/`；
+- Android Java/C++ 源码。
+
+### 10.2 watercomms 与当前实现的差异
+
+| 项 | watercomms | 当前 |
+|---|---|---|
+| Ns | 960 | 960 |
+| CP | **67** | **240** |
+| 前导 | **Naiser3 9360 样本 + ChirpGap 960** | **400 Hz 标记 30 ms + guard 10 ms** |
+| 同步 | 前导互相关 + seekback | 标记音过阈值 |
+| 信道估计 | **训练符号频域均衡**，可选时域均衡 | 训练符号单抽头 |
+| 调制 | 差分 BPSK-OFDM | 差分 BPSK-OFDM |
+| 卷积码/交织 | `{7,5,10}` / JavaRandom | 同 |
+| 帧尾 | 无额外 tail | 20 ms tail |
+| 频率 | 1000–4000 Hz 基准 | 0.5–8 kHz 多集合 |
+
+### 10.3 对齐原则
+
+- **只允许频段不同**；Ns、CP、前导、同步、均衡、调制、编码、交织必须与 watercomms 一致。
+- 先做 watercomms 原版 1–4 kHz，确认成功率；
+- 再替换为 S0–S6 频段，比较哪个频率适合；
+- 不同调制解调方法作为独立实验，不得混入对齐版。
+
+### 10.4 实施步骤
+
+1. `WatercommsPhy`：加载 `naiser3` 9360 样本；帧 = preamble + 960 gap + (training + data)*(960+67)；
+2. TX：训练符号 + 差分 BPSK + 卷积码/交织，不用 400 marker；
+3. RX：前导互相关定位、跳过 gap/CP、训练符号频域均衡、差分解调；
+4. 先 1–4 kHz，再跑 S0–S6；
+5. 记录前导相关峰、频偏、均衡系数、每集合成功率。
+
+### 10.5 测试矩阵
+
+- 方法：watercomms 对齐版（freq EQ）；
+- 频段：1–4k 基准；S0–S6；后续可加时域均衡对照；
+- 每集合 20 包、至少 3 轮；
+- 指标：PER、每集合通过率、失配位置、前导 SNR、CFO。
+
+### 10.6 验收
+
+- 1–4k 对齐版先达到可复现的成功率；
+- 再比较频率；
+- 不能再用 400 marker/Cp=240 版本冒充 watercomms 结果。
+
+
 ## 10. watercomms 参考
 
 - 代码/文档快照：`Reference/watercomms/`；

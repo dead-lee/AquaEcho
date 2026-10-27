@@ -1,6 +1,8 @@
 # AquaEcho
 
-> watercomms 代码/文档参考快照：`Reference/watercomms/`（commit `efa5e21`）。
+> watercomms 代码/文档参考快照：`Reference/watercomms/`（commit `efa5e21`，含 naiser3 9360 样本）。
+>
+> PHY 对齐方案与测试矩阵见 `docs/DESIGN.md` 第 10 节。
 >
 > 代码修改的权威设计见 [`docs/DESIGN.md`](docs/DESIGN.md)；任何改动前先更新设计并按其 review。
 
