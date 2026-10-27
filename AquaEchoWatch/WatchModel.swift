@@ -21,6 +21,7 @@ final class WatchModel: ObservableObject {
     private let player = TonePlayer()
     private let link = WatchLink()
     private let workout = WorkoutKeeper()
+    private var commandState = RunCommandState()
     private var task: Task<Void, Never>?
     private var stopRequested = false
     private var pendingLogs: [String] = []
@@ -113,7 +114,12 @@ final class WatchModel: ObservableObject {
     var totalPackets: Int { sets.count * packetsPerSet }
 
     func start() {
-        guard !isRunning else { return }
+        if isRunning {
+            log("收到 start：当前轮仍在运行，先停止并重启")
+            stop()
+        }
+        let generation = commandState.applyStart()
+        log("start 序号=\(generation)")
         refreshOutputVolume()
         if outputVolume < 0.99 {
             volumeBlocked = true
@@ -154,7 +160,11 @@ final class WatchModel: ObservableObject {
     }
 
     func stop() {
-        guard isRunning else { return }
+        commandState.applyStop()
+        guard isRunning else {
+            log("收到 stop：当前已停止，消费命令")
+            return
+        }
         stopRequested = true
         task?.cancel()
         task = nil

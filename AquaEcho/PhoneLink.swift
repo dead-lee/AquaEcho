@@ -27,13 +27,8 @@ final class PhoneLink: NSObject, WCSessionDelegate {
         guard session.activationState == .activated else { return false }
         let control = envelope.kind == .start || envelope.kind == .stop || envelope.kind == .endWorkout
         if control {
-            if ControlDeliveryPolicy.shouldQueue(isReachable: session.isReachable) {
-                session.transferUserInfo(payload)
-            } else {
-                session.sendMessage(payload, replyHandler: nil) { _ in
-                    session.transferUserInfo(payload)
-                }
-            }
+            // 单一 FIFO 队列；不检查 reachable，也不与 sendMessage 混用。
+            session.transferUserInfo(payload)
             return true
         }
         guard session.isReachable else { return false }
