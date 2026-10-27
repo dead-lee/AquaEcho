@@ -1,5 +1,7 @@
 # AquaEcho
 
+> watercomms 代码/文档参考快照：`Reference/watercomms/`（commit `efa5e21`）。
+>
 > 代码修改的权威设计见 [`docs/DESIGN.md`](docs/DESIGN.md)；任何改动前先更新设计并按其 review。
 
 用水下手表扬声器向 iPhone 麦克风**单向**发送 64 bit 测试包，在空气、空气+密封袋、水下+密封袋三种场景下找最稳的频谱集合。
