@@ -253,8 +253,10 @@ final class WatchModel: ObservableObject {
         }
 
         do {
-            status = "3 秒后开始"
-            try await Task.sleep(nanoseconds: 3_000_000_000)
+            status = "立即开始"
+            if PlaybackTiming.preRollSeconds > 0 {
+                try await Task.sleep(nanoseconds: UInt64(PlaybackTiming.preRollSeconds * 1_000_000_000))
+            }
             try Task.checkCancellation()
             if stopRequested { return }
 

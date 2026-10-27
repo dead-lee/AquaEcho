@@ -16,6 +16,7 @@ let package = Package(
                 "Models.swift",
                 "OFDMModem.swift",
                 "PacketLayout.swift",
+                "PlaybackTiming.swift",
                 "RunCommandState.swift",
                 "RunLog.swift",
                 "ScanCSVExporter.swift",
