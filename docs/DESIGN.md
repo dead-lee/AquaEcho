@@ -40,6 +40,10 @@
   3. 不等待 `ready`、`watchActive`、`started`、ack；发送失败只记录。
 - 手表收到 `start`：立即启动 workout/音频并发波，不等待 UI active，不回 ack 作为门槛。
 - 手机停止：立即停止 capture、cancel 接收、后台完成收尾；best-effort 发送 `stop`，不等确认。
+- **控制命令不因 reachable=false 被丢弃**：
+  - start/stop/endWorkout 在 reachable 时用 `sendMessage`；
+  - 不可达时用 `transferUserInfo` 排队，仍是单向 best-effort，不引入 ack；
+  - 手表已在 `didReceiveUserInfo` 接收，收到 stop 立即停止扫描。
 - 不再使用 `watchActive / watchInactive / started` 作为发送或判定条件；相关状态和测试已删除。
 - 不再使用 `pendingStart`、自动重发、`started` 有效性判定。
 - 静音、0/140、包丢失都是有效测试结果；结果只由声波包决定，不由配对状态决定。
