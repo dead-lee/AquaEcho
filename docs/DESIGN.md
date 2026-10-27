@@ -54,6 +54,34 @@
 - 不再使用 `pendingStart`、自动重发、`started` 有效性判定。
 - 静音、0/140、包丢失都是有效测试结果；结果只由声波包决定，不由配对状态决定。
 
+
+## 10. 诊断记录（不改调制解调）
+
+只增加日志，不改变阈值、定时、OFDM、译码或通过判定。
+
+### 手表 TX
+
+每个包记录：
+
+- set ID、packet index、payload hex；
+- 帧样本数、airtime、carrier 数、data symbols；
+- marker 频率；
+- 调度发送时间；
+- 音频路由、采样率、系统音量、engine/player 状态。
+
+### 手机 RX
+
+- 录音链路：输入路由、采样率、声道、session category、是否 running；
+- 每个 marker：样本位置、marker SNR、候选集合、数据窗口范围；
+- 成功帧：set、packet、data SNR、offset；
+- 失败帧：未匹配原因/候选数，不改变原有失败判定。
+
+### 验收
+
+- 不改变任何既有测试结果；
+- 新增日志字段可在 `AquaEcho_Log_*.txt` 中直接检索；
+- WAV/CSV 逻辑不变。
+
 ## 5. 停止与日志
 
 - 停止后 `ScanReceiver.cancel()` 立即丢弃积压 ingest；`finish` 不处理 pending。
