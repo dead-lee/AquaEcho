@@ -5,9 +5,6 @@ enum WCKind: String, Codable {
     case start
     case stop
     case ready
-    case watchActive
-    case watchInactive
-    case started
     case volumeLow
     case endWorkout
     case workoutEnded

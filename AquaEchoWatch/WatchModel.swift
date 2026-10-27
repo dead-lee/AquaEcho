@@ -149,8 +149,6 @@ final class WatchModel: ObservableObject {
                 return
             }
             self.log("开始扫描 \(self.config.label) 集合=\(self.sets.map(\.id).joined(separator: ",")) 每组=\(self.packetsPerSet) 总包=\(self.totalPackets) 系统音量=\(String(format: "%.2f", self.outputVolume))")
-            self.link.send(WCEnvelope(kind: .started))
-            self.log("已发送 started ack")
             await self.run()
         }
     }
@@ -193,16 +191,6 @@ final class WatchModel: ObservableObject {
             // 读音量失败时保留上一次值；不阻塞 workout/扫描。
         }
         outputVolume = session.outputVolume
-    }
-
-    func notifyWatchActive() {
-        log("watchActive → phone")
-        link.send(WCEnvelope(kind: .watchActive))
-    }
-
-    func notifyWatchInactive() {
-        log("watchInactive → phone")
-        link.send(WCEnvelope(kind: .watchInactive))
     }
 
     func prepareAudioSession() {
@@ -320,7 +308,7 @@ final class WatchModel: ObservableObject {
         case .endWorkout:
             log("收到手机结束 workout 指令")
             endForeground()
-        case .volumeLow, .ready, .watchActive, .watchInactive, .started, .workoutEnded, .finished:
+        case .volumeLow, .ready, .workoutEnded, .finished:
             break
         case .log:
             break

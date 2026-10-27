@@ -30,7 +30,6 @@ final class WatchInterfaceController: WKInterfaceController {
     override func willActivate() {
         super.willActivate()
         model.noteScenePhase(.active)
-        model.notifyWatchActive()
         model.prepareAudioSession()
         model.refreshOutputVolume()
         render()
@@ -38,7 +37,6 @@ final class WatchInterfaceController: WKInterfaceController {
     }
 
     override func didDeactivate() {
-        model.notifyWatchInactive()
         volumeControl.resignFocus()
         super.didDeactivate()
     }

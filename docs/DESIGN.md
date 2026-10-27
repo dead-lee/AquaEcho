@@ -40,7 +40,7 @@
   3. 不等待 `ready`、`watchActive`、`started`、ack；发送失败只记录。
 - 手表收到 `start`：立即启动 workout/音频并发波，不等待 UI active，不回 ack 作为门槛。
 - 手机停止：立即停止 capture、cancel 接收、后台完成收尾；best-effort 发送 `stop`，不等确认。
-- 不再使用 `watchActive / watchInactive / started` 作为发送或判定条件。
+- 不再使用 `watchActive / watchInactive / started` 作为发送或判定条件；相关状态和测试已删除。
 - 不再使用 `pendingStart`、自动重发、`started` 有效性判定。
 - 静音、0/140、包丢失都是有效测试结果；结果只由声波包决定，不由配对状态决定。
 
@@ -102,11 +102,6 @@
 3. **后台 workout 策略**：`WorkoutStartPolicy`，background 必须拒绝启动。
 4. **日志 UI 合流**：`LogUIBatcher`，大量日志只能触发有限次数 UI 更新，且保留尾部内容。
 5. **停止异步**：`StopHandoff`，停止调用必须立即返回，慢 finish 不得阻塞调用线程。
-6. **停止取消接收**：`ScanReceiver.cancel()` 后 ingest 不得继续处理；finish 不处理 pending。
-7. **立即监听**：开始测试时 capture 立即启动，不等待手表状态。
-8. **best-effort start**：start 发送失败只记录，不阻塞、不重试。
-9. **手表收到即发**：`WatchModel` 收到 start 立即启动，不要求 active。
-10. **停止快速返回**：capture.stop 不阻塞主线程；cancel 不等待接收锁。
 
 测试命令：`swift test`。
 

@@ -25,10 +25,8 @@ let package = Package(
                 "ScanResultBuilder.swift",
                 "SpectralSet.swift",
                 "StartAdmission.swift",
-                "StartRetryState.swift",
                 "StopHandoff.swift",
                 "TestScenario.swift",
-                "WatchActivityState.swift",
                 "WorkoutStartPolicy.swift"
             ]
         ),

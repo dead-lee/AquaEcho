@@ -47,7 +47,6 @@ final class PhoneModel: ObservableObject {
     @Published private(set) var reachable = false
     @Published private(set) var activated = false
     @Published private(set) var watchReady = false
-    @Published private(set) var watchActivity = WatchActivityState()
     @Published private(set) var watchSessionStatus = "未启动"
 
     private let capture = AudioCapture()
@@ -57,7 +56,6 @@ final class PhoneModel: ObservableObject {
     private let demodQueue = DispatchQueue(label: "aquaecho.scan.receiver")
     private var watchLaunchRequested = false
     private var watchLaunchInFlight = false
-    private var startRetry = StartRetryState()
     private var startAdmission = StartAdmission()
     private let logBatcher = LogUIBatcher()
     private let mainWatchdog = MainThreadWatchdog()
@@ -74,20 +72,14 @@ final class PhoneModel: ObservableObject {
                 guard let self else { return }
                 let old = self.reachable
                 self.reachable = value
-                self.log("WCSession reachable \(old) → \(value)（activated=\(self.activated), watchReady=\(self.watchReady), pendingStart=\(self.startRetry.pending), recording=\(self.isRecording)）")
-                if value && self.isRecording && self.startRetry.pending {
-                    self.sendStart(reason: "reachable")
-                }
+                self.log("WCSession reachable \(old) → \(value)（activated=\(self.activated), watchReady=\(self.watchReady), recording=\(self.isRecording)）")
             }
         }
         link.onActivated = { [weak self] value in
             Task { @MainActor in
                 guard let self else { return }
                 self.activated = value
-                self.log("WCSession activated=\(value)（reachable=\(self.reachable), watchReady=\(self.watchReady), pendingStart=\(self.startRetry.pending), recording=\(self.isRecording)）")
-                if value && self.isRecording && self.startRetry.pending {
-                    self.sendStart(reason: "activated")
-                }
+                self.log("WCSession activated=\(value)（reachable=\(self.reachable), watchReady=\(self.watchReady), recording=\(self.isRecording)）")
             }
         }
         link.activate()
@@ -200,8 +192,6 @@ final class PhoneModel: ObservableObject {
             return
         }
         defer { startAdmission.end() }
-        startRetry.clear()
-        watchActivity.resetStarted()
         RunLog.shared.resumeNewLogIfSuspended()
         lastError = nil
         analysis = nil
@@ -211,15 +201,10 @@ final class PhoneModel: ObservableObject {
         config = config.normalized
         ScanConfigStore.save(config)
 
-        log("准备开始：watchReady=\(watchReady), activated=\(activated), reachable=\(reachable)")
+        log("立即开始监听：watchReady=\(watchReady), activated=\(activated), reachable=\(reachable)；不等待手表")
         if !watchReady {
-            await prepareWatchOnLaunch()
-            for _ in 0..<20 {
-                if watchReady { break }
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
+            Task { await self.prepareWatchOnLaunch() }
         }
-        log("准备结束：watchReady=\(watchReady), activated=\(activated), reachable=\(reachable)")
 
         let allowed = await AudioCapture.requestPermission()
         guard allowed else {
@@ -261,7 +246,7 @@ final class PhoneModel: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = true
         log("开始录音 \(config.label) 集合=\(config.activeSets.map(\.id).joined(separator: ",")) 预计包=\(expectedPackets) 预计=\(String(format: "%.1f", expectedSeconds))s 构建=\(AppBuild.number)")
 
-        _ = sendStart(reason: "userStart")
+        sendStart(reason: "userStart")
 
         maxTask?.cancel()
         maxTask = Task { @MainActor [weak self] in
@@ -276,16 +261,11 @@ final class PhoneModel: ObservableObject {
         guard isRecording else { return }
         isRecording = false
         isAnalyzing = true
-        startRetry.clear()
         status = "正在保存录音…"
         maxTask?.cancel()
         maxTask = nil
         capture.onSamples = nil
         UIApplication.shared.isIdleTimerDisabled = false
-        if !watchActivity.started {
-            log("停止时手表尚未 started（watchActive=\(watchActivity.active)）；本轮不作为有效开始")
-        }
-
         let receiver = self.receiver
         self.receiver = nil
         receiver?.cancel()
@@ -376,27 +356,12 @@ final class PhoneModel: ObservableObject {
         }
     }
 
-    @discardableResult
-    private func sendStart(reason: String) -> Bool {
-        guard watchActivity.canSendStart else {
-            startRetry.record(sent: false)
-            status = "录音中。等待手表 App 激活；激活后自动发送开始。"
-            log("start 延后：watchActive=false（watchReady=\(watchReady), activated=\(activated), reachable=\(reachable)）")
-            return false
-        }
+    private func sendStart(reason: String) {
         let sent = link.send(WCEnvelope(kind: .start, scanConfig: config))
-        startRetry.record(sent: sent)
-        let state = "watchActive=\(watchActivity.active), watchStarted=\(watchActivity.started), watchReady=\(watchReady), activated=\(activated), reachable=\(reachable), recording=\(isRecording), pending=\(startRetry.pending)"
-        log("发送 start reason=\(reason) 结果=\(sent ? "成功" : "失败")（\(state)）")
-        if sent {
-            status = watchReady
-                ? "录音中。手表已就绪，开始指令已发送。"
-                : "录音中。开始指令已发送，等待手表就绪。"
-        } else {
-            status = "录音中。手表连接未就绪，已排队；ready/连接恢复后自动补发开始。"
-            log("start 未发出：已进入 pendingStart，等待 ready/activated/reachable 后自动重发")
-        }
-        return sent
+        log("发送 best-effort start reason=\(reason) 结果=\(sent ? "成功" : "失败")（watchReady=\(watchReady), activated=\(activated), reachable=\(reachable), recording=\(isRecording)）")
+        status = sent
+            ? "录音中。start 已发送，正在监听手表声波。"
+            : "录音中。start 未发出；继续监听，结果只由声波决定。"
     }
 
     private func abortRecording(reason: String) {
@@ -406,7 +371,6 @@ final class PhoneModel: ObservableObject {
         }
         isRecording = false
         isAnalyzing = false
-        startRetry.clear()
         maxTask?.cancel()
         maxTask = nil
         capture.onSamples = nil
@@ -437,7 +401,6 @@ final class PhoneModel: ObservableObject {
         }
         watchReady = false
         watchLaunchRequested = false
-        startRetry.clear()
         watchSessionStatus = "已结束"
         if isRecording {
             stopAndAnalyze()
@@ -471,33 +434,12 @@ final class PhoneModel: ObservableObject {
         case .ready:
             watchReady = true
             watchSessionStatus = "保持中"
-            log("收到 ready（recording=\(isRecording), pendingStart=\(startRetry.pending), active=\(watchActivity.active), started=\(watchActivity.started), reachable=\(reachable)）")
-            if isRecording {
-                if startRetry.pending {
-                    _ = sendStart(reason: "ready")
-                }
-            } else {
+            log("收到 ready（recording=\(isRecording), reachable=\(reachable)）")
+            if !isRecording {
                 status = "手表 workout 已就绪，可以开始测试。"
-            }
-        case .watchActive:
-            watchActivity.setActive(true)
-            watchSessionStatus = "保持中"
-            log("收到 watchActive（recording=\(isRecording), pendingStart=\(startRetry.pending), ready=\(watchReady)）")
-            if isRecording && startRetry.pending {
-                _ = sendStart(reason: "watchActive")
-            }
-        case .watchInactive:
-            watchActivity.setActive(false)
-            log("收到 watchInactive（recording=\(isRecording), pendingStart=\(startRetry.pending)）")
-        case .started:
-            watchActivity.markStarted()
-            log("收到 started ack（recording=\(isRecording), active=\(watchActivity.active)）")
-            if isRecording {
-                status = "录音中。手表已开始扫描。"
             }
         case .workoutEnded:
             watchReady = false
-            startRetry.clear()
             watchSessionStatus = "已结束"
             log("手表 workout 已结束")
             if !isRecording {
