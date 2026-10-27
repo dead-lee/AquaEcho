@@ -24,7 +24,19 @@ final class PhoneLink: NSObject, WCSessionDelegate {
         if envelope.kind == .config {
             try? session.updateApplicationContext(payload)
         }
-        guard session.activationState == .activated, session.isReachable else { return false }
+        guard session.activationState == .activated else { return false }
+        let control = envelope.kind == .start || envelope.kind == .stop || envelope.kind == .endWorkout
+        if control {
+            if ControlDeliveryPolicy.shouldQueue(isReachable: session.isReachable) {
+                session.transferUserInfo(payload)
+            } else {
+                session.sendMessage(payload, replyHandler: nil) { _ in
+                    session.transferUserInfo(payload)
+                }
+            }
+            return true
+        }
+        guard session.isReachable else { return false }
         session.sendMessage(payload, replyHandler: nil) { _ in
             session.transferUserInfo(payload)
         }

@@ -180,8 +180,8 @@ final class PhoneModel: ObservableObject {
 
     func stopTest() {
         if isRecording {
-            _ = link.send(WCEnvelope(kind: .stop))
-            log("已请求手表停止")
+            let queued = link.send(WCEnvelope(kind: .stop))
+            log("已请求手表停止 结果=\(queued ? "已发送/排队" : "失败")（reachable=\(reachable)）")
         }
         stopAndAnalyze()
     }

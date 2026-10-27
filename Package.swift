@@ -10,6 +10,7 @@ let package = Package(
             path: "Shared",
             sources: [
                 "AppBuild.swift",
+                "ControlDeliveryPolicy.swift",
                 "ConvolutionalCode.swift",
                 "Goertzel.swift",
                 "LogUIBatcher.swift",
