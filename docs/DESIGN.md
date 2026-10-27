@@ -29,40 +29,27 @@
 - 手机 `ScanReceiver` 流式处理；结果实时更新。
 - 已知弱项：S3（4–8 kHz）在 08:20 实测为 7/20；整体 124/140（88.6%）。S3 单独评估，不作为全局失败。
 
-## 4. 启动、重发与诊断
+## 4. 极简控制面（声波测试优先）
 
-### 4.1 start 发送
+测试目标是声波链路和手机接收处理能力，不是手机-手表配对握手。控制面只保留最小 best-effort：
 
-- 手机开始录音时先记录 `watchReady / activated / reachable`；
-- `send(.start)` 失败（WCSession 未激活/不可达）时不得再写“请手动点开始”；
-- 进入 `pendingStart`，在收到手表 `.ready`、`onActivated(true)` 或 `onReachable(true)` 时自动重发；
-- 重发成功后清除 pending；重复 `.start` 由手表 `isRunning` 幂等忽略；
-- 日志必须记录每次发送的 `reason / 返回值 / watchReady / activated / reachable`。
+- 手机 App 启动时 best-effort 唤起手表并建立 workout；失败只记录，不阻塞测试。
+- 手机点开始：
+  1. 立即启动麦克风 capture/监听；
+  2. 立即 best-effort 发送一次 `start`；
+  3. 不等待 `ready`、`watchActive`、`started`、ack；发送失败只记录。
+- 手表收到 `start`：立即启动 workout/音频并发波，不等待 UI active，不回 ack 作为门槛。
+- 手机停止：立即停止 capture、cancel 接收、后台完成收尾；best-effort 发送 `stop`，不等确认。
+- 不再使用 `watchActive / watchInactive / started` 作为发送或判定条件。
+- 不再使用 `pendingStart`、自动重发、`started` 有效性判定。
+- 静音、0/140、包丢失都是有效测试结果；结果只由声波包决定，不由配对状态决定。
 
-### 4.2 停止取消与手表 active
+## 5. 停止与日志
 
-- 用户停止后，`ScanReceiver.cancel()` 立即置位；所有尚在队列中的 `ingest` 必须直接返回，不得继续解调积压。
-- `finish()` 在取消状态下只构建已完成的 results，不再调用 `processPending` 处理积压。
-- `watchReady` 只代表 workout ready，不代表 App active；手机不得仅凭 watchReady 发 start。
-- 手表在 `willActivate` 发 `.watchActive`，`didDeactivate` 发 `.watchInactive`；真正开始播放时发 `.started`。
-- 手机只有 `watchActive=true` 才允许发 start；收到 `.started` 才认为开始成功。停止早于 `.started` 的轮次不得当作有效测试。
-- **`watchInactive` 不得清除 `started`**；`started` 只在新一轮开始或停止时清空，避免中途抬腕/熄屏误判。
-- **停止流程不得在主线程调用 `capture.stop()` 或等待 `receiver.cancel()`**；capture.stop 派发到后台，cancel 使用独立锁快速返回。
-
-### 4.3 主线程响应与停止流程
-
-- 主线程不得用 `demodQueue.sync` 等待接收器；停止/收尾必须在后台队列异步执行，再回主线程更新 UI。
-- `stopAndAnalyze` 必须分阶段记录：停止请求、capture.stop、buffer.snapshot、receiver.finish 请求/完成、分析构建、WAV/CSV 写盘。
-- 增加 main-thread watchdog：后台计时器每 1 s 探测主线程；延迟超过 2 s 写 `[Phone][Main]` 日志，不能在主线程写。
-- `abortRecording` 不得同步等待接收器。
-- `startRecording` 必须有 `isStarting` 门闩，防止并发进入；重复点击只记录“忽略重复开始”。
-- `pendingStart` 只由 `send(.start)` 的返回值决定：`pendingStart = !sent`；`watchReady` 只用于诊断，不应制造 pending。
-
-### 4.3 workout 启动
-
-- `WorkoutKeeper.startIfNeeded(source:)` 必须记录来源；
-- 若 `WKApplication.shared().applicationState == .background`，直接跳过并记录 `source`，不得尝试启动；
-- 调用来源包括：`appDidBecomeActive`、`workoutConfiguration`、`phoneStart`、`scenePhaseActive`、`pendingWorkout`、`recover`。
+- 停止后 `ScanReceiver.cancel()` 立即丢弃积压 ingest；`finish` 不处理 pending。
+- capture.stop 在后台执行；receiver.cancel 使用独立锁；主线程不等待。
+- 日志记录发送/接收/停止的阶段，但日志状态不阻塞、不改判结果。
+- 主线程 watchdog 保留，用于发现实现层卡死，不参与测试判定。
 
 ## 5. 音量与前台（A 方案）
 
@@ -116,9 +103,10 @@
 4. **日志 UI 合流**：`LogUIBatcher`，大量日志只能触发有限次数 UI 更新，且保留尾部内容。
 5. **停止异步**：`StopHandoff`，停止调用必须立即返回，慢 finish 不得阻塞调用线程。
 6. **停止取消接收**：`ScanReceiver.cancel()` 后 ingest 不得继续处理；finish 不处理 pending。
-7. **watch active/ack**：inactive 时不得发 start；started 前停止不得标记成功。
-8. **inactive 保留 started**：中途 inactive 后 active，不得丢失 started。
-9. **停止快速返回**：capture.stop 不阻塞主线程；cancel 不等待接收锁。
+7. **立即监听**：开始测试时 capture 立即启动，不等待手表状态。
+8. **best-effort start**：start 发送失败只记录，不阻塞、不重试。
+9. **手表收到即发**：`WatchModel` 收到 start 立即启动，不要求 active。
+10. **停止快速返回**：capture.stop 不阻塞主线程；cancel 不等待接收锁。
 
 测试命令：`swift test`。
 

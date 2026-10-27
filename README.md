@@ -38,7 +38,7 @@
 
 停止流程会记录 `capture.stop / receiver.cancel / buffer.snapshot / receiver.finish / 写盘` 各阶段；停止后积压的 ingest 直接丢弃，不再继续解调。如果主线程超过 2 秒未响应，后台 watchdog 会写 `[Phone][Main]`。UI 日志按 0.2 秒合流，避免每条 Scan 日志都触发主线程刷新。
 
-手表会发送 `watchActive / watchInactive / started`：只有 App active 时手机才发 start，只有收到 started 才认为真正开始；中途 inactive 不会清掉已 started。停止时 receiver.cancel 立即返回，capture.stop 放后台。
+手机点开始后立即监听并 best-effort 发送 start，不等待手表 ready/active/ack；手表收到 start 立即发波。停止时 receiver.cancel 立即返回，capture.stop 放后台。静音/0/140 也是有效测试结果。
 
 启动日志会记录 `watchReady / activated / reachable / pendingStart` 和每次 `start` 的发送原因、返回值；workout 启动日志会记录 `source` 和 `appState`，App 在后台时不会尝试启动 workout。
 
