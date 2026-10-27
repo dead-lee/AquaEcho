@@ -245,6 +245,7 @@ final class PhoneModel: ObservableObject {
         startedAt = started
         UIApplication.shared.isIdleTimerDisabled = true
         log("开始录音 \(config.label) 集合=\(config.activeSets.map(\.id).joined(separator: ",")) 预计包=\(expectedPackets) 预计=\(String(format: "%.1f", expectedSeconds))s 构建=\(AppBuild.number)")
+        log("录音链路[\(capture.diagnostics)]")
 
         sendStart(reason: "userStart")
 

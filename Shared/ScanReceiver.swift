@@ -184,10 +184,23 @@ final class ScanReceiver {
                 changed = true
             } else {
                 corruptEvents += 1
+                var diagnostics = ""
+                let local = dataStart - windowStart
+                if local >= 0, local < window.count {
+                    let end = min(window.count, local + maxDataSamples)
+                    let slice = window[local..<end]
+                    let frequencies = [1_000, 2_000, 4_000, 6_000, 8_000]
+                    let powers = frequencies.map { frequency in
+                        String(format: "%.3g", Goertzel.power(samples: slice, sampleRate: sampleRate, frequency: Double(frequency)))
+                    }
+                    diagnostics = " 数据窗口=\(local)..\(end) 能量1k/2k/4k/6k/8k=\(powers.joined(separator: "/"))"
+                }
                 logs.append(String(
-                    format: "未匹配 样本=%d 标记SNR=%.1fdB",
+                    format: "未匹配 样本=%d 标记SNR=%.1fdB 期望=%@ 候选=%d 偏移数=%d%@",
                     locale: Locale(identifier: "en_US_POSIX"),
-                    marker.peakAbs, marker.snrDB
+                    marker.peakAbs, marker.snrDB,
+                    sets.isEmpty ? "none" : sets[expectedSetIndex].id,
+                    sets.count, offsets.count, diagnostics
                 ))
             }
         }

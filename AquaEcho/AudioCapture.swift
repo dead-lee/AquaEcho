@@ -26,6 +26,13 @@ final class AudioCapture {
     private var sampleRate: Double = 48_000
     private(set) var isRunning = false
 
+    /// 只读诊断，不参与录音逻辑。
+    var diagnostics: String {
+        let session = AVAudioSession.sharedInstance()
+        let inputs = session.currentRoute.inputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
+        return "route=\(inputs.isEmpty ? "none" : inputs) sr=\(Int(sampleRate)) ch=\(session.inputNumberOfChannels) category=\(session.category.rawValue) mode=\(session.mode.rawValue) running=\(isRunning)"
+    }
+
     static func requestPermission() async -> Bool {
         let application = AVAudioApplication.shared
         switch application.recordPermission {

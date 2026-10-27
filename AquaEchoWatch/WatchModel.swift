@@ -268,6 +268,22 @@ final class WatchModel: ObservableObject {
                     let frame = ScanProtocol.makeFrame(payload: payload, set: set)
                     let airtime = Double(frame.count) / ScanProtocol.sampleRate * 1_000
                     let date = try await player.play(samples: frame, leadSamples: 0)
+                    let payloadHex = ScanPayload.hex(payload)
+                    let txLine = String(
+                        format: "TX 集合=%@ 包=%d 载荷=%@ 样本=%d 空中=%.1fms 载波=%d 数据符号=%d 标记=%dHz 发送时间=%@ 音频[%@]",
+                        locale: Locale(identifier: "en_US_POSIX"),
+                        set.id,
+                        index,
+                        payloadHex,
+                        frame.count,
+                        Double(frame.count) / ScanProtocol.sampleRate * 1_000,
+                        set.carrierCount,
+                        set.dataSymbols,
+                        Int(ScanProtocol.markerHz),
+                        RunLog.timestamp(date),
+                        player.diagnostics
+                    )
+                    self.log(txLine)
                     sent += 1
                     progressText = "\(set.id) \(index + 1)/\(packets) · \(sent)/\(activeSets.count * packets)"
                     status = "发送 \(set.id) 包 \(index + 1)/\(packets)"

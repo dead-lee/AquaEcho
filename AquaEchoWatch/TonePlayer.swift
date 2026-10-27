@@ -26,6 +26,13 @@ final class TonePlayer {
 
     var outputVolume: Float { AVAudioSession.sharedInstance().outputVolume }
 
+    /// 只读诊断，不参与播放逻辑。
+    var diagnostics: String {
+        let session = AVAudioSession.sharedInstance()
+        let outputs = session.currentRoute.outputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
+        return "route=\(outputs.isEmpty ? "none" : outputs) sr=\(Int(session.sampleRate)) vol=\(String(format: "%.2f", session.outputVolume)) engine=\(engine.isRunning) player=\(player.isPlaying) latency=\(String(format: "%.1f", session.outputLatency * 1000))ms"
+    }
+
     func setPlaybackVolume(_ value: Float) {
         playbackVolume = min(1, max(0, value))
         guard attached else { return }
