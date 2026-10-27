@@ -39,6 +39,7 @@
   2. 立即 best-effort 发送一次 `start`；
   3. 不等待 `ready`、`watchActive`、`started`、ack；发送失败只记录。
 - 手表收到 `start`：立即启动 workout/音频并发波，不等待 UI active，不回 ack 作为门槛。
+- **不得有 3 秒“准备”预滚**；收到 start 后直接进入发波，第一包 airtime 不应额外等待。
 - 手机停止：立即停止 capture、cancel 接收、后台完成收尾；best-effort 发送 `stop`，不等确认。
 - **控制命令只走一条队列**：
   - start/stop/endWorkout 全部使用 `transferUserInfo`，不检查 reachable；
