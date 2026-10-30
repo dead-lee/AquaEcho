@@ -164,7 +164,10 @@ private struct ResultsScreen: View {
                                 ShareLink(item: url) { Label("导出 CSV", systemImage: "square.and.arrow.up") }
                             }
                             if let url = model.wavURL {
-                                ShareLink(item: url) { Label("导出 WAV", systemImage: "waveform") }
+                                ShareLink(item: url) { Label("导出麦克风 WAV", systemImage: "waveform") }
+                            }
+                            if let url = model.watchTxURL {
+                                ShareLink(item: url) { Label("导出发送缓冲", systemImage: "applewatch") }
                             }
                             if let url = model.scanLogURL {
                                 ShareLink(item: url) { Label("导出分析日志", systemImage: "doc.text") }

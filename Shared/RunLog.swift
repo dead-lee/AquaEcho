@@ -101,7 +101,8 @@ final class RunLog {
         "AquaEcho_Results_",
         "AquaEcho_Recording_",
         "AquaEcho_Scan_",
-        "AquaEcho_ScanLog_"
+        "AquaEcho_ScanLog_",
+        "AquaEcho_WatchTx_"
     ]) -> [URL] {
         let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []

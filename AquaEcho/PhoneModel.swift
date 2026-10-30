@@ -42,6 +42,7 @@ final class PhoneModel: ObservableObject {
     @Published private(set) var csvURL: URL?
     @Published private(set) var wavURL: URL?
     @Published private(set) var scanLogURL: URL?
+    @Published private(set) var watchTxURL: URL?
     @Published private(set) var logText = ""
     @Published private(set) var lastError: String?
     @Published private(set) var reachable = false
@@ -73,6 +74,12 @@ final class PhoneModel: ObservableObject {
                 let old = self.reachable
                 self.reachable = value
                 self.log("WCSession reachable \(old) → \(value)（activated=\(self.activated), watchReady=\(self.watchReady), recording=\(self.isRecording)）")
+            }
+        }
+        link.onWatchBuffer = { [weak self] url in
+            Task { @MainActor in
+                self?.watchTxURL = url
+                self?.log("已收到手表发送缓冲 \(url.lastPathComponent)")
             }
         }
         link.onActivated = { [weak self] value in
@@ -417,7 +424,7 @@ final class PhoneModel: ObservableObject {
             status = "录音中不能清理，请先停止。"
             return
         }
-        let urls = RunLog.documentFiles(prefixes: ["AquaEcho_Scan_", "AquaEcho_ScanLog_"])
+        let urls = RunLog.documentFiles(prefixes: ["AquaEcho_Scan_", "AquaEcho_ScanLog_", "AquaEcho_WatchTx_"])
         for url in urls {
             try? FileManager.default.removeItem(at: url)
         }
@@ -427,6 +434,7 @@ final class PhoneModel: ObservableObject {
         csvURL = nil
         wavURL = nil
         scanLogURL = nil
+        watchTxURL = nil
         status = "已完全清理扫描文件与所有日志"
     }
 

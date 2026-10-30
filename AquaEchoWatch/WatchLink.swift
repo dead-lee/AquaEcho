@@ -4,6 +4,7 @@ import WatchConnectivity
 final class WatchLink: NSObject, WCSessionDelegate {
     var onEnvelope: ((WCEnvelope) -> Void)?
     var onReachable: ((Bool) -> Void)?
+    var onFileTransferFinished: ((String, String?) -> Void)?
 
     func activate() {
         guard WCSession.isSupported() else { return }
@@ -33,6 +34,18 @@ final class WatchLink: NSObject, WCSessionDelegate {
         return true
     }
 
+    @discardableResult
+    func sendFile(_ url: URL) -> Bool {
+        guard WCSession.isSupported() else { return false }
+        let session = WCSession.default
+        guard session.activationState == .activated else { return false }
+        session.transferFile(url, metadata: [
+            "kind": "watchTx",
+            "name": url.lastPathComponent
+        ])
+        return true
+    }
+
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         DispatchQueue.main.async {
             self.onReachable?(session.isReachable)
@@ -58,6 +71,14 @@ final class WatchLink: NSObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         deliver(userInfo)
+    }
+
+    func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
+        let name = fileTransfer.file.fileURL.lastPathComponent
+        let message = error?.localizedDescription
+        DispatchQueue.main.async {
+            self.onFileTransferFinished?(name, message)
+        }
     }
 
     private func deliver(_ message: [String: Any]) {

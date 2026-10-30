@@ -11,11 +11,13 @@ let package = Package(
             sources: [
                 "AppBuild.swift",
                 "ConvolutionalCode.swift",
+                "FloatWav.swift",
                 "Goertzel.swift",
                 "LogUIBatcher.swift",
                 "Models.swift",
                 "OFDMModem.swift",
                 "PacketLayout.swift",
+                "PlaybackBufferLog.swift",
                 "PlaybackTiming.swift",
                 "RunCommandState.swift",
                 "RunLog.swift",

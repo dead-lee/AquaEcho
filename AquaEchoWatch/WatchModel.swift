@@ -55,6 +55,15 @@ final class WatchModel: ObservableObject {
         link.onEnvelope = { [weak self] envelope in
             Task { @MainActor in self?.handle(envelope) }
         }
+        link.onFileTransferFinished = { [weak self] name, error in
+            Task { @MainActor in
+                if let error {
+                    self?.log("发送缓冲传到手机失败 \(name) \(error)")
+                } else {
+                    self?.log("发送缓冲已传到手机 \(name)")
+                }
+            }
+        }
         link.onReachable = { [weak self] value in
             Task { @MainActor in
                 self?.reachable = value
@@ -250,7 +259,10 @@ final class WatchModel: ObservableObject {
 
     private func run() async {
         holdLogSync = true
+        let capture = PlaybackBufferLog()
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         defer {
+            finishCapture(capture, directory: documents)
             holdLogSync = false
             flushLogs()
         }
@@ -279,6 +291,7 @@ final class WatchModel: ObservableObject {
                     let frame = ScanProtocol.makeFrame(payload: payload, set: set)
                     let airtime = Double(frame.count) / ScanProtocol.sampleRate * 1_000
                     let date = try await player.play(samples: frame, leadSamples: 0)
+                    capture.append(frame, startedAt: date)
                     let payloadHex = ScanPayload.hex(payload)
                     let txLine = String(
                         format: "TX 集合=%@ 包=%d 载荷=%@ 样本=%d 空中=%.1fms 载波=%d 数据符号=%d 前导=Naiser3 Cp=%d Ns=%d 发送时间=%@ 音频[%@]",
@@ -325,6 +338,22 @@ final class WatchModel: ObservableObject {
         foregroundRunning = workout.running
         foregroundStatus = workout.status
         refreshOutputVolume()
+    }
+
+    private func finishCapture(_ capture: PlaybackBufferLog, directory: URL) {
+        guard !capture.isEmpty else { return }
+        do {
+            guard let url = try capture.write(directory: directory) else { return }
+            PlaybackBufferLog.removePreviousFiles(in: directory, keeping: url)
+            log("发送缓冲已写入 \(url.lastPathComponent) 样本=\(capture.samples.count)")
+            if link.sendFile(url) {
+                log("发送缓冲开始传到手机")
+            } else {
+                log("发送缓冲留在手表 Documents，手机传输未开始")
+            }
+        } catch {
+            log("发送缓冲写入失败 \(error.localizedDescription)")
+        }
     }
 
     private func handle(_ envelope: WCEnvelope) {

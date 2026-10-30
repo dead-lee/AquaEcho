@@ -5,6 +5,7 @@ final class PhoneLink: NSObject, WCSessionDelegate {
     var onEnvelope: ((WCEnvelope) -> Void)?
     var onReachable: ((Bool) -> Void)?
     var onActivated: ((Bool) -> Void)?
+    var onWatchBuffer: ((URL) -> Void)?
 
     func activate() {
         guard WCSession.isSupported() else {
@@ -67,6 +68,26 @@ final class PhoneLink: NSObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         deliver(userInfo)
+    }
+
+    func session(_ session: WCSession, didReceive file: WCSessionFile) {
+        let offered = file.metadata?["name"] as? String ?? file.fileURL.lastPathComponent
+        guard let name = PlaybackBufferLog.acceptedFileName(offered) else { return }
+        let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let destination = folder.appendingPathComponent(name)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.moveItem(at: file.fileURL, to: destination)
+        } catch {
+            return
+        }
+        let saved = destination
+        DispatchQueue.main.async {
+            self.onWatchBuffer?(saved)
+        }
     }
 
     private func deliver(_ message: [String: Any]) {
