@@ -31,7 +31,8 @@
 - 数据比特按 watercomms 在各符号间均分，不足一个符号的位置用 `java.util.Random(1)` 填充，再按符号序号交织，再相对上一符号做差分 BPSK。
 - 均衡：训练符号频域单抽头 `G = X/Y`，数据符号乘 G 后做差分解调。
 - 播放幅度按峰值归一化到 0.98。watercomms 的 int16 缩放是 `32767/N/子载波数`，波形形状相同，电平不同。
-- 同步：FFT 归一化互相关，阈值 0.4，峰距至少 8000 样本；再按 watercomms `seekback(960, 0.4×峰)` 取相关峰前缘。然后按 Matlab `find_symbol` / `channe_look_back` 做信道回看：取起点前 300 点、长度等于前导的一段，只在前导所在的 1–4 kHz 上估计 `H = Y/X`，IFFT 后取噪声门限以上的最早径，作为真正的前导起点。不做 96 阶 800–4000 Hz FIR。解调仍只在 ±Cp（±67）里找残余定时。
+- 同步：FFT 归一化互相关，阈值 0.4，峰距至少 8000 样本；再按 watercomms `seekback(960, 0.4×峰)` 取相关峰前缘。然后按 Matlab `find_symbol` / `channe_look_back` 做信道回看：取起点前 300 点、长度等于前导的一段，只在前导所在的 1–4 kHz 上估计 `H = Y/X`，IFFT 后在前 600 点里取噪声门限以上的最早径。落在这 600 点以外视为估计失败，保持 seekback 起点。不做 96 阶 800–4000 Hz FIR。解调仍只在 ±Cp（±67）里找残余定时。
+- 0.4 比的是波形和 Naiser3 模板的归一化相关，不是响度。手机录音里前导可以比间隙高十几个 dB，相关仍低于 0.4。
 - 弱载波：watercomms 的 `Fre_adaptation` 是发之前用反馈选一段连续高信噪比载波，不是单向解调里的擦除。单向扫描不加入这步。
 - 频段是唯一允许不同的参数。W0 为原版 1–4 kHz（60 个子载波）。S0–S6 只改频段。
 - 载荷：8 bit 集合号 + 16 bit 包序号 + 40 bit SplitMix64；手机自校验。
@@ -211,6 +212,7 @@
 5. **停止异步**：`StopHandoff`，停止调用必须立即返回，慢 finish 不得阻塞调用线程。
 6. **信道回看**：相关峰故意晚 112 点时，`channelLookbackStart` 把起点拉回，S2 整包能解出。只喂样本，不提供手表状态。
 7. **失焦不等于停止**：`WatchRuntimePolicy` 对 `willResignActive` 保持播放；只有 `didEnterBackground` 才停止并结束 workout。手机 `ScanReceiver` 没有手表状态参数，一段合法录音必须解出。
+8. **手机录音回放**：`Tests/Fixtures` 里的两段真机 WAV 用 `ScanReceiver` 按 2048 点分块重放。081656 的 S0、S1 必须全对，总数不少于 56；081831 只能解出 1 包。门限不按响度放宽。
 
 测试命令：`swift test`。
 

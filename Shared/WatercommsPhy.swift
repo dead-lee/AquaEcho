@@ -162,7 +162,9 @@ enum WatercommsPhy {
         let windowStart = seekbackLag - lead
         guard windowStart >= 0, windowStart + count <= samples.count else { return seekbackLag }
         let segment = Array(samples[windowStart..<(windowStart + count)])
-        guard let delay = earliestPreamblePath(segment: segment) else { return seekbackLag }
+        // 窗口已经从相关峰前移 300 点。合理的直达/反射径落在这 600 点里。
+        // 冲激最大点若跑到几千点之外，是估计失败，保持 seekback，不能把帧起点甩走。
+        guard let delay = earliestPreamblePath(segment: segment), delay <= 600 else { return seekbackLag }
         let start = windowStart + delay
         guard start >= 0, start < samples.count else { return seekbackLag }
         return start
@@ -227,11 +229,15 @@ enum WatercommsPhy {
             peakValue = max(peakValue, value)
         }
         guard peakValue > 0 else { return nil }
-        for index in 0..<fftLength { magnitude[index] /= peakValue }
+        let searchLimit = 600
+        var localPeak = 0.0
+        for index in 0..<searchLimit { localPeak = max(localPeak, magnitude[index]) }
+        guard localPeak > 0 else { return nil }
+        for index in 0..<fftLength { magnitude[index] /= localPeak }
 
         let tailCount = 500
         let noise = magnitude.suffix(tailCount).reduce(0, +) / Double(tailCount) * 1.5 + 0.15
-        guard let path = magnitude.enumerated().max(by: { $0.element < $1.element })?.offset else { return nil }
+        guard let path = magnitude.prefix(searchLimit).enumerated().max(by: { $0.element < $1.element })?.offset else { return nil }
         let limit = min(fftLength - 2, path + 10)
         guard limit >= 1 else { return path }
         var peaks: [Int] = []
