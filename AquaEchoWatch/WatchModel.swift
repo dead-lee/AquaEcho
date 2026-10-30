@@ -199,11 +199,14 @@ final class WatchModel: ObservableObject {
 
     func refreshOutputVolume() {
         let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .default, policy: .longFormAudio, options: [.mixWithOthers])
-            try session.setActive(true)
-        } catch {
-            // 读音量失败时保留上一次值；不阻塞 workout/扫描。
+        // 播放中每 0.5 秒读音量。切到 .default 会拿掉 measurement 的平坦响应，啁啾被系统均衡染色。
+        if session.category != .playback || session.mode != .measurement {
+            do {
+                try session.setCategory(.playback, mode: .measurement, policy: .longFormAudio, options: [])
+                try session.setActive(true)
+            } catch {
+                // 读音量失败时保留上一次值；不阻塞 workout/扫描。
+            }
         }
         outputVolume = session.outputVolume
     }

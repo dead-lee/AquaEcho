@@ -2,6 +2,19 @@ import XCTest
 @testable import AquaEchoCore
 
 final class ChannelLookbackTests: XCTestCase {
+    func testSyncBandpassKeepsThePreambleLag() {
+        let preamble = WatercommsPreamble.samples
+        let start = 2_000
+        var samples = [Float](repeating: 0, count: start + preamble.count + 2_000)
+        samples.replaceSubrange(start..<(start + preamble.count), with: preamble)
+        let filtered = WatercommsPhy.bandpassForSync(samples)
+        let scores = WatercommsPhy.preambleScores(in: filtered)
+        let peak = scores.enumerated().max { $0.element < $1.element }
+        let lag = (peak?.offset ?? -1) + WatercommsPhy.syncFilterDelay
+        XCTAssertEqual(lag, start, "peak=\(peak?.offset ?? -1) score=\(peak?.element ?? -1)")
+        XCTAssertGreaterThan(peak?.element ?? 0, 0.8)
+    }
+
     func testLateCorrelationPeakIsPulledBackToTheFrame() {
         let set = try! XCTUnwrap(SpectralSet.set(id: "S2"))
         let payload = ScanPayload.make(setID: set.id, packetIndex: 4)

@@ -8,16 +8,13 @@ final class RecordingReplayTests: XCTestCase {
         XCTAssertEqual(passed(analysis, "S0"), 20)
         XCTAssertEqual(passed(analysis, "S1"), 20)
         XCTAssertEqual(passed(analysis, "S3"), 0)
-        XCTAssertGreaterThanOrEqual(analysis.overallPassed, 56)
+        XCTAssertGreaterThanOrEqual(analysis.overallPassed, 67)
     }
 
-    func testSecondAirRecordingDoesNotTreatLoudMismatchAsPackets() throws {
+    func testSecondAirRecordingDemodulatesTheHandheldFrames() throws {
         let analysis = try replay("AquaEcho_Scan_air_20261030_081831.wav")
-        XCTAssertEqual(analysis.overallPassed, 1)
-        XCTAssertEqual(passed(analysis, "S0"), 1)
-        for id in ["S1", "S2", "S3", "S4", "S5", "S6", "W0"] {
-            XCTAssertEqual(passed(analysis, id), 0, id)
-        }
+        XCTAssertEqual(passed(analysis, "S0"), 18)
+        XCTAssertEqual(analysis.overallPassed, 18)
     }
 
     private func replay(_ name: String) throws -> ScanAnalysis {

@@ -141,6 +141,59 @@ enum WatercommsPhy {
         return kept
     }
 
+    /// Matlab `find_symbol` 的 96 阶 800–4000 Hz FIR。只给同步用。
+    /// 输出与输入等长。vDSP 卷积把对称 FIR 的峰提前 `syncFilterDelay` 点，调用方要把峰下标加回。
+    static let syncFilterOrder = 96
+    static let syncFilterDelay = syncFilterOrder / 2
+
+    static let syncFilter: [Float] = {
+        let fs = ScanProtocol.sampleRate
+        let low = 800.0
+        let high = 4_000.0
+        let order = syncFilterOrder
+        var taps = [Float](repeating: 0, count: order + 1)
+        let mid = order / 2
+        for index in 0...order {
+            let offset = Double(index - mid)
+            let ideal: Double
+            if offset == 0 {
+                ideal = 2 * (high - low) / fs
+            } else {
+                ideal = (sin(2 * .pi * high * offset / fs) - sin(2 * .pi * low * offset / fs)) / (.pi * offset)
+            }
+            let window = 0.54 - 0.46 * cos(2 * .pi * Double(index) / Double(order))
+            taps[index] = Float(ideal * window)
+        }
+        return taps
+    }()
+
+    static func bandpassForSync(_ samples: [Float]) -> [Float] {
+        let taps = syncFilter
+        guard !samples.isEmpty, taps.count > 1 else { return samples }
+        // vDSP_conv 读取 signal[n + p]，输入要比结果长 P-1。
+        var padded = samples
+        padded.append(contentsOf: repeatElement(0, count: taps.count - 1))
+        var filtered = [Float](repeating: 0, count: samples.count)
+        let reversed = Array(taps.reversed())
+        padded.withUnsafeBufferPointer { source in
+            reversed.withUnsafeBufferPointer { kernel in
+                filtered.withUnsafeMutableBufferPointer { destination in
+                    guard let signal = source.baseAddress,
+                          let filter = kernel.baseAddress,
+                          let output = destination.baseAddress else { return }
+                    vDSP_conv(
+                        signal, 1,
+                        filter, 1,
+                        output, 1,
+                        vDSP_Length(samples.count),
+                        vDSP_Length(taps.count)
+                    )
+                }
+            }
+        }
+        return filtered
+    }
+
     /// watercomms `seekback`：在峰前 `seek` 点内，取第一个超过 `ratio * 峰` 的位置。
     static func seekback(scores: [Float], peak: Int, seek: Int = gap, ratio: Float = 0.4) -> Int {
         guard scores.indices.contains(peak) else { return max(0, peak) }

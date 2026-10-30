@@ -8,6 +8,7 @@ final class ScanReceiver {
 
     private struct PendingPreamble {
         var peakAbs: Int
+        var seekAbs: Int
         var score: Float
     }
 
@@ -18,9 +19,11 @@ final class ScanReceiver {
     private let maxDataSamples: Int
     private let preambleLength = WatercommsPhy.preamble.count
     private let seek = WatercommsPhy.gap
-    private let correlationThreshold: Float = 0.4
+    private let correlationThreshold: Float = 0.20
     private let minPeakDistance = 8_000
+    /// 对齐良好的包落在 ±Cp。手持第二段录音的符号起点在相关峰前大约 100 点，要单独往前搜。
     private let timingOffsets = [0, -4, 4, -8, 8, -16, 16, -32, 32, -48, 48, -67, 67]
+    private let earlyTimingOffsets = Array(stride(from: -160, through: -80, by: 16))
 
     private let lock = NSLock()
     private var window: [Float] = []
@@ -113,7 +116,8 @@ final class ScanReceiver {
             guard localStart >= 0, localEnd <= window.count, localEnd > localStart else { return }
 
             let region = Array(window[localStart..<localEnd])
-            let scores = WatercommsPhy.preambleScores(in: region)
+            let filtered = WatercommsPhy.bandpassForSync(region)
+            let scores = WatercommsPhy.preambleScores(in: filtered)
             guard scores.count == scoreEnd - scoreStart else {
                 scanAbs = scoreEnd
                 continue
@@ -123,18 +127,27 @@ final class ScanReceiver {
                 threshold: correlationThreshold,
                 minDistance: minPeakDistance
             )
+            let delay = WatercommsPhy.syncFilterDelay
             for peak in peaks {
-                let absLag = scoreStart + peak.index
+                let rawIndex = peak.index + delay
+                let absLag = scoreStart + rawIndex
                 guard absLag >= scanAbs, absLag < scoreEnd else { continue }
-                let seekLag = scoreStart + WatercommsPhy.seekback(scores: scores, peak: peak.index, seek: seek)
+                let seekIndex = WatercommsPhy.seekback(scores: scores, peak: peak.index, seek: seek) + delay
+                let seekLag = scoreStart + max(0, seekIndex)
                 let localSeek = seekLag - windowStart
-                let adjusted = windowStart + WatercommsPhy.channelLookbackStart(samples: window, seekbackLag: localSeek)
-                if pending.contains(where: { abs($0.peakAbs - adjusted) < minPeakDistance }) { continue }
-                pending.append(PendingPreamble(peakAbs: adjusted, score: peak.score))
+                let looked = windowStart + WatercommsPhy.channelLookbackStart(samples: window, seekbackLag: localSeek)
+                let candidate = PendingPreamble(peakAbs: looked, seekAbs: seekLag, score: peak.score)
+                if let existing = pending.firstIndex(where: { abs($0.seekAbs - seekLag) < minPeakDistance }) {
+                    if peak.score > pending[existing].score {
+                        pending[existing] = candidate
+                    }
+                    continue
+                }
+                pending.append(candidate)
                 logs.append(String(
                     format: "前导 样本=%d 相关=%.3f 起点=%d",
                     locale: Locale(identifier: "en_US_POSIX"),
-                    absLag, peak.score, adjusted
+                    absLag, peak.score, looked
                 ))
             }
             scanAbs = scoreEnd
@@ -147,13 +160,14 @@ final class ScanReceiver {
         var remaining: [PendingPreamble] = []
         var changed = false
         for preamble in pending {
-            let dataStart = preamble.peakAbs + ScanProtocol.dataStartOffset
+            let latest = max(preamble.peakAbs, preamble.seekAbs) + (timingOffsets.max() ?? 0)
+            let dataStart = latest + ScanProtocol.dataStartOffset
             let requiredEnd = dataStart + maxDataSamples
             guard requiredEnd <= windowStart + window.count else {
                 remaining.append(preamble)
                 continue
             }
-            if let hit = decode(dataStartAbs: dataStart) {
+            if let hit = decode(preamble: preamble) {
                 let key = "\(hit.set.id)#\(hit.packetIndex)"
                 let result = ScanPacketResult(
                     setID: hit.set.id,
@@ -216,29 +230,40 @@ final class ScanReceiver {
         var offset: Int
     }
 
-    private func decode(dataStartAbs: Int) -> Hit? {
+    private func decode(preamble: PendingPreamble) -> Hit? {
         var candidates = [sets[expectedSetIndex]]
-        for (index, set) in sets.enumerated() where index != expectedSetIndex {
-            candidates.append(set)
+        // 0.35 以下的峰在手持录音里是被染色的 S0。先只解期望集合，避免每个噪声峰把 8 个频段都解调一遍。
+        if preamble.score >= 0.35 {
+            for (index, set) in sets.enumerated() where index != expectedSetIndex {
+                candidates.append(set)
+            }
+        }
+        var bases = [preamble.peakAbs]
+        if preamble.seekAbs != preamble.peakAbs {
+            bases.append(preamble.seekAbs)
         }
         for set in candidates {
             let plan = ScanProtocol.plan(for: set)
             let symbolCount = plan.packetSamples - plan.preamble.count - plan.gap
-            for offset in timingOffsets {
-                let startAbs = dataStartAbs + offset
-                let local = startAbs - windowStart
-                guard local >= 0, local + symbolCount <= window.count else { continue }
-                guard let demod = OFDMModem.demodulateFrequencyOnly(window: window, symbolStart: local, plan: plan) else { continue }
-                let decoded = ConvolutionalCode.decode(demod.bits)
-                guard decoded.count == PacketLayout.bitCount else { continue }
-                let word = word(from: decoded)
-                let setCode = ScanPayload.setCode(of: word)
-                let packet = ScanPayload.packetIndex(of: word)
-                guard setCode == set.code, packet >= 0, packet < packetsPerSet else { continue }
-                let expected = ScanPayload.make(setCode: setCode, packetIndex: packet)
-                guard word == expected else { continue }
-                let snr = demod.readings.isEmpty ? 0 : demod.readings.reduce(0) { $0 + $1.snrDB } / Double(demod.readings.count)
-                return Hit(set: set, word: word, packetIndex: packet, snrDB: snr, offset: offset)
+            for base in bases {
+                let needsEarly = preamble.score < 0.5 && base == preamble.seekAbs
+                let offsets = needsEarly ? earlyTimingOffsets + timingOffsets : timingOffsets
+                for offset in offsets {
+                    let startAbs = base + ScanProtocol.dataStartOffset + offset
+                    let local = startAbs - windowStart
+                    guard local >= 0, local + symbolCount <= window.count else { continue }
+                    guard let demod = OFDMModem.demodulateFrequencyOnly(window: window, symbolStart: local, plan: plan) else { continue }
+                    let decoded = ConvolutionalCode.decode(demod.bits)
+                    guard decoded.count == PacketLayout.bitCount else { continue }
+                    let word = word(from: decoded)
+                    let setCode = ScanPayload.setCode(of: word)
+                    let packet = ScanPayload.packetIndex(of: word)
+                    guard setCode == set.code, packet >= 0, packet < packetsPerSet else { continue }
+                    let expected = ScanPayload.make(setCode: setCode, packetIndex: packet)
+                    guard word == expected else { continue }
+                    let snr = demod.readings.isEmpty ? 0 : demod.readings.reduce(0) { $0 + $1.snrDB } / Double(demod.readings.count)
+                    return Hit(set: set, word: word, packetIndex: packet, snrDB: snr, offset: offset)
+                }
             }
         }
         return nil
