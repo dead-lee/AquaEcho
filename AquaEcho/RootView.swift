@@ -110,7 +110,7 @@ private struct TestScreen: View {
                         .controlSize(.large)
                         .disabled(model.isAnalyzing)
                     }
-                    Text("手机会请求手表同时开始扫描；标记音到达后实时解码，结果随包更新。停止后保存 WAV/CSV。")
+                    Text("手机会请求手表同时开始扫描；收到 Naiser3 前导后实时解码，结果随包更新。停止后保存 WAV/CSV。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -278,7 +278,7 @@ private struct ScanPacketDetailView: View {
         let snr = String(format: "%.1f", packet.snrDB)
         let marker = String(format: "%.1f", packet.markerSNRDB)
         let air = String(format: "%.0f", packet.airtimeMs)
-        return "SNR \(snr) dB · 标记 \(marker) dB · \(air) ms"
+        return "SNR \(snr) dB · 前导 \(marker) · \(air) ms"
     }
 }
 
@@ -301,7 +301,7 @@ private struct ConfigScreen: View {
                             }
                         }
                     }
-                    Text("不选任何集合时使用全部 7 组。")
+                    Text("默认一次扫完全部频段，每组 20 包。W0 是 watercomms 原版 1–4 kHz，S0–S6 只改频段。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

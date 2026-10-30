@@ -69,7 +69,7 @@ enum ScanResultBuilder {
         logs.append("实时汇总 \(normalized.label) 通过=\(overallPassed)/\(overallPackets) 成功率=\(String(format: "%.1f", overallRate * 100))% 未匹配=\(corruptEvents)")
         for summary in summaries {
             logs.append(String(
-                format: "汇总 集合=%@ 通过=%d/%d 成功率=%.1f%% 检出=%d 平均SNR=%.1fdB 标记SNR=%.1fdB airtime=%.1fms",
+                format: "汇总 集合=%@ 通过=%d/%d 成功率=%.1f%% 检出=%d 平均SNR=%.1fdB 前导相关=%.3f airtime=%.1fms",
                 locale: Locale(identifier: "en_US_POSIX"),
                 summary.setID, summary.passed, summary.packets,
                 summary.successRate * 100, summary.detected,

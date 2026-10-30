@@ -1,14 +1,14 @@
 import Foundation
 
-/// 实时扫描接收器：按音频块滚动检测 400 Hz 标记音，标记后等数据帧到齐立即解调。
+/// 实时扫描接收器：滚动缓冲里做 Naiser3 前导互相关，帧到齐后立即解调。
 /// 不保存整段录音做后处理；结果在收到每个包时通过 onUpdate 推给 UI。
 final class ScanReceiver {
     var onUpdate: ((ScanAnalysis) -> Void)?
     var onLog: ((String) -> Void)?
 
-    private struct PendingMarker {
+    private struct PendingPreamble {
         var peakAbs: Int
-        var snrDB: Double
+        var score: Float
     }
 
     private let config: ScanRunConfig
@@ -16,21 +16,18 @@ final class ScanReceiver {
     private let packetsPerSet: Int
     private let startedAt: Date
     private let maxDataSamples: Int
-    private let markerWindow = ScanProtocol.markerSamples
-    private let hop = 240
-    private let offsets = [0, -48, 48, -96, 96, -144, 144, -192, 192, -240, 240, -288, 288, -336, 336, -384, 384, -432, 432, -480, 480]
+    private let preambleLength = WatercommsPhy.preamble.count
+    private let seek = WatercommsPhy.gap
+    private let correlationThreshold: Float = 0.4
+    private let minPeakDistance = 8_000
+    private let timingOffsets = [0, -4, 4, -8, 8, -16, 16, -32, 32, -48, 48, -67, 67]
 
     private let lock = NSLock()
     private var window: [Float] = []
     private var windowStart = 0
     private var scanAbs = 0
     private var sampleRate: Double = 48_000
-    private var noiseHistory: [Double] = []
-    private var inRun = false
-    private var runPeakAbs = 0
-    private var runPeakPower = 0.0
-    private var runNoise = 1e-9
-    private var pending: [PendingMarker] = []
+    private var pending: [PendingPreamble] = []
     private var results: [String: ScanPacketResult] = [:]
     private var corruptEvents = 0
     private var expectedSetIndex = 0
@@ -43,7 +40,10 @@ final class ScanReceiver {
         self.sets = normalized.activeSets
         self.packetsPerSet = max(1, min(200, normalized.packetsPerSet))
         self.startedAt = startedAt
-        self.maxDataSamples = (normalized.activeSets.map { ScanProtocol.plan(for: $0).packetSamples }.max() ?? 0) + 480
+        self.maxDataSamples = (normalized.activeSets.map { set -> Int in
+            let plan = ScanProtocol.plan(for: set)
+            return plan.packetSamples - plan.preamble.count - plan.gap
+        }.max() ?? 0) + 128
     }
 
     /// 用户停止后，队列里尚未处理的音频块直接丢弃，不再做标记/解调。
@@ -71,7 +71,7 @@ final class ScanReceiver {
         }
         if self.sampleRate == 0 { self.sampleRate = sampleRate }
         window.append(contentsOf: samples)
-        detectMarkers(logs: &logs)
+        detectPreambles(logs: &logs)
         if processPending(logs: &logs) {
             update = build(finishedAt: date)
         }
@@ -86,7 +86,6 @@ final class ScanReceiver {
         var logs: [String] = []
         lock.lock()
         let wasCanceled = isCanceled
-        closeRun(logs: &logs)
         if !wasCanceled {
             _ = processPending(logs: &logs)
         }
@@ -96,61 +95,62 @@ final class ScanReceiver {
         return analysis
     }
 
-    // MARK: - 标记音
+    // MARK: - 前导
 
-    private func detectMarkers(logs: inout [String]) {
-        guard markerWindow > 0, hop > 0 else { return }
-        while scanAbs + markerWindow <= windowStart + window.count {
-            let local = scanAbs - windowStart
-            let power = Goertzel.power(
-                samples: window[local..<(local + markerWindow)],
-                sampleRate: sampleRate,
-                frequency: ScanProtocol.markerHz
-            )
-            noiseHistory.append(power)
-            if noiseHistory.count > 400 { noiseHistory.removeFirst(noiseHistory.count - 400) }
-            let noise = percentile(noiseHistory, 0.20)
-            let threshold = max(noise * 300, 1e-6)
+    private func detectPreambles(logs: inout [String]) {
+        guard preambleLength > 0 else { return }
+        let maxNewLags = 16_384
+        while !isCanceled {
+            let bufferEnd = windowStart + window.count
+            let newestLag = bufferEnd - preambleLength
+            guard newestLag >= scanAbs else { return }
 
-            if power > threshold {
-                if !inRun {
-                    inRun = true
-                    runPeakAbs = scanAbs
-                    runPeakPower = power
-                    runNoise = max(noise, 1e-20)
-                } else if power > runPeakPower {
-                    runPeakAbs = scanAbs
-                    runPeakPower = power
-                }
-            } else if inRun {
-                closeRun(logs: &logs)
+            let scoreStart = max(windowStart, scanAbs - seek)
+            let newLags = min(maxNewLags, newestLag - scanAbs + 1)
+            let scoreEnd = scanAbs + newLags
+            let localStart = scoreStart - windowStart
+            let localEnd = scoreEnd - windowStart + preambleLength - 1
+            guard localStart >= 0, localEnd <= window.count, localEnd > localStart else { return }
+
+            let region = Array(window[localStart..<localEnd])
+            let scores = WatercommsPhy.preambleScores(in: region)
+            guard scores.count == scoreEnd - scoreStart else {
+                scanAbs = scoreEnd
+                continue
             }
-            scanAbs += hop
+            let peaks = WatercommsPhy.preamblePeaks(
+                scores: scores,
+                threshold: correlationThreshold,
+                minDistance: minPeakDistance
+            )
+            for peak in peaks {
+                let absLag = scoreStart + peak.index
+                guard absLag >= scanAbs, absLag < scoreEnd else { continue }
+                let seekLag = scoreStart + WatercommsPhy.seekback(scores: scores, peak: peak.index, seek: seek)
+                let localSeek = seekLag - windowStart
+                let adjusted = windowStart + WatercommsPhy.channelLookbackStart(samples: window, seekbackLag: localSeek)
+                if pending.contains(where: { abs($0.peakAbs - adjusted) < minPeakDistance }) { continue }
+                pending.append(PendingPreamble(peakAbs: adjusted, score: peak.score))
+                logs.append(String(
+                    format: "前导 样本=%d 相关=%.3f 起点=%d",
+                    locale: Locale(identifier: "en_US_POSIX"),
+                    absLag, peak.score, adjusted
+                ))
+            }
+            scanAbs = scoreEnd
         }
-    }
-
-    private func closeRun(logs: inout [String]) {
-        guard inRun else { return }
-        inRun = false
-        let snr = 10 * log10(max(runPeakPower, 1e-20) / max(runNoise, 1e-20))
-        pending.append(PendingMarker(peakAbs: runPeakAbs, snrDB: snr))
-        logs.append(String(
-            format: "标记 样本=%d SNR=%.1fdB",
-            locale: Locale(identifier: "en_US_POSIX"),
-            runPeakAbs, snr
-        ))
     }
 
     // MARK: - 数据帧
 
     private func processPending(logs: inout [String]) -> Bool {
-        var remaining: [PendingMarker] = []
+        var remaining: [PendingPreamble] = []
         var changed = false
-        for marker in pending {
-            let dataStart = marker.peakAbs + ScanProtocol.dataStartOffset
+        for preamble in pending {
+            let dataStart = preamble.peakAbs + ScanProtocol.dataStartOffset
             let requiredEnd = dataStart + maxDataSamples
             guard requiredEnd <= windowStart + window.count else {
-                remaining.append(marker)
+                remaining.append(preamble)
                 continue
             }
             if let hit = decode(dataStartAbs: dataStart) {
@@ -165,10 +165,10 @@ final class ScanReceiver {
                     passed: true,
                     detected: true,
                     snrDB: hit.snrDB,
-                    markerSNRDB: marker.snrDB,
+                    markerSNRDB: Double(preamble.score),
                     airtimeMs: hit.set.airtimeMs,
-                    frameSample: marker.peakAbs,
-                    timestamp: startedAt.addingTimeInterval(Double(marker.peakAbs) / sampleRate)
+                    frameSample: preamble.peakAbs,
+                    timestamp: startedAt.addingTimeInterval(Double(preamble.peakAbs) / sampleRate)
                 )
                 results[key] = result
                 if let index = sets.firstIndex(where: { $0.id == hit.set.id }) {
@@ -176,9 +176,9 @@ final class ScanReceiver {
                     expectedSetIndex = next < packetsPerSet ? index : (index + 1) % sets.count
                 }
                 logs.append(String(
-                    format: "事件 集合=%@ 样本=%d 标记SNR=%.1fdB 解出=%@ 包=%d 通过=是 数据SNR=%.1fdB 偏移=%d",
+                    format: "事件 集合=%@ 样本=%d 前导相关=%.3f 解出=%@ 包=%d 通过=是 数据SNR=%.1fdB 偏移=%d",
                     locale: Locale(identifier: "en_US_POSIX"),
-                    hit.set.id, marker.peakAbs, marker.snrDB,
+                    hit.set.id, preamble.peakAbs, preamble.score,
                     ScanPayload.hex(hit.word), hit.packetIndex, hit.snrDB, hit.offset
                 ))
                 changed = true
@@ -196,11 +196,11 @@ final class ScanReceiver {
                     diagnostics = " 数据窗口=\(local)..\(end) 能量1k/2k/4k/6k/8k=\(powers.joined(separator: "/"))"
                 }
                 logs.append(String(
-                    format: "未匹配 样本=%d 标记SNR=%.1fdB 期望=%@ 候选=%d 偏移数=%d%@",
+                    format: "未匹配 样本=%d 前导相关=%.3f 期望=%@ 候选=%d 偏移数=%d%@",
                     locale: Locale(identifier: "en_US_POSIX"),
-                    marker.peakAbs, marker.snrDB,
+                    preamble.peakAbs, preamble.score,
                     sets.isEmpty ? "none" : sets[expectedSetIndex].id,
-                    sets.count, offsets.count, diagnostics
+                    sets.count, timingOffsets.count, diagnostics
                 ))
             }
         }
@@ -223,10 +223,11 @@ final class ScanReceiver {
         }
         for set in candidates {
             let plan = ScanProtocol.plan(for: set)
-            for offset in offsets {
+            let symbolCount = plan.packetSamples - plan.preamble.count - plan.gap
+            for offset in timingOffsets {
                 let startAbs = dataStartAbs + offset
                 let local = startAbs - windowStart
-                guard local >= 0, local + plan.packetSamples <= window.count else { continue }
+                guard local >= 0, local + symbolCount <= window.count else { continue }
                 guard let demod = OFDMModem.demodulateFrequencyOnly(window: window, symbolStart: local, plan: plan) else { continue }
                 let decoded = ConvolutionalCode.decode(demod.bits)
                 guard decoded.count == PacketLayout.bitCount else { continue }
@@ -254,8 +255,8 @@ final class ScanReceiver {
     // MARK: - 缓冲
 
     private func trim() {
-        // 保留最近 2 秒，足够覆盖最大帧和待解码标记。
-        let keepFrom = windowStart + window.count - 96_000
+        // 保留最近 3 秒。watercomms 一帧大约 0.3–0.5 秒，前导起点必须留到数据符号到齐。
+        let keepFrom = windowStart + window.count - 144_000
         if keepFrom > windowStart {
             let remove = min(keepFrom - windowStart, window.count)
             window.removeFirst(remove)
@@ -275,10 +276,4 @@ final class ScanReceiver {
         )
     }
 
-    private func percentile(_ values: [Double], _ fraction: Double) -> Double {
-        guard !values.isEmpty else { return 0 }
-        let sorted = values.sorted()
-        let index = min(sorted.count - 1, max(0, Int(Double(sorted.count - 1) * fraction)))
-        return sorted[index]
-    }
 }

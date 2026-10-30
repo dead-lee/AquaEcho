@@ -29,6 +29,7 @@ let package = Package(
                 "StartAdmission.swift",
                 "StopHandoff.swift",
                 "TestScenario.swift",
+                "WatchRuntimePolicy.swift",
                 "WatercommsPhy.swift",
                 "WatercommsPreamble.swift",
                 "WorkoutStartPolicy.swift"

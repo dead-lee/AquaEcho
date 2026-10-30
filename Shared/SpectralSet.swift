@@ -44,7 +44,8 @@ struct SpectralSet: Identifiable, Equatable, Codable {
         SpectralSet(id: "S3", title: "S3 · 4.0–8.0 kHz", lowHz: 4_000, highHz: 8_000, markerHz: 400, chirpLowHz: 4_000, chirpHighHz: 8_000),
         SpectralSet(id: "S4", title: "S4 · 0.5–4.0 kHz", lowHz: 500, highHz: 4_000, markerHz: 400, chirpLowHz: 500, chirpHighHz: 4_000),
         SpectralSet(id: "S5", title: "S5 · 0.5–8.0 kHz", lowHz: 500, highHz: 8_000, markerHz: 400, chirpLowHz: 500, chirpHighHz: 8_000),
-        SpectralSet(id: "S6", title: "S6 · 0.5–3.0 kHz", lowHz: 500, highHz: 3_000, markerHz: 400, chirpLowHz: 500, chirpHighHz: 3_000)
+        SpectralSet(id: "S6", title: "S6 · 0.5–3.0 kHz", lowHz: 500, highHz: 3_000, markerHz: 400, chirpLowHz: 500, chirpHighHz: 3_000),
+        SpectralSet(id: "W0", title: "W0 · 1–4 kHz", lowHz: 1_000, highHz: 4_000, markerHz: 0, chirpLowHz: 1_000, chirpHighHz: 4_000)
     ]
 
     static let defaultIDs: [String] = all.map(\.id)

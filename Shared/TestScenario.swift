@@ -34,19 +34,53 @@ enum TestScenario: String, CaseIterable, Codable, Identifiable {
 }
 
 struct ScanRunConfig: Codable, Equatable {
+    /// 1 是只有 S0–S6 的旧配置。2 起首次打开时把目录里的全部频段都选上。
+    static let currentCatalogVersion = 2
+
     var scenario: TestScenario = .air
     var distanceCm: Double = 1
     var notes: String = ""
     var packetsPerSet: Int = 20
     var setIDs: [String] = SpectralSet.defaultIDs
+    var catalogVersion: Int = ScanRunConfig.currentCatalogVersion
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        scenario = try container.decodeIfPresent(TestScenario.self, forKey: .scenario) ?? .air
+        distanceCm = try container.decodeIfPresent(Double.self, forKey: .distanceCm) ?? 1
+        notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        packetsPerSet = try container.decodeIfPresent(Int.self, forKey: .packetsPerSet) ?? 20
+        setIDs = try container.decodeIfPresent([String].self, forKey: .setIDs) ?? SpectralSet.defaultIDs
+        catalogVersion = try container.decodeIfPresent(Int.self, forKey: .catalogVersion) ?? 1
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(scenario, forKey: .scenario)
+        try container.encode(distanceCm, forKey: .distanceCm)
+        try container.encode(notes, forKey: .notes)
+        try container.encode(packetsPerSet, forKey: .packetsPerSet)
+        try container.encode(setIDs, forKey: .setIDs)
+        try container.encode(catalogVersion, forKey: .catalogVersion)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case scenario, distanceCm, notes, packetsPerSet, setIDs, catalogVersion
+    }
 
     var normalized: ScanRunConfig {
         var copy = self
         copy.distanceCm = copy.distanceCm.clamped(to: 0...200)
         copy.packetsPerSet = copy.packetsPerSet.clamped(to: 1...200)
         copy.notes = String(copy.notes.prefix(200))
-        let known = Set(SpectralSet.all.map(\.id))
-        copy.setIDs = Array(Set(copy.setIDs)).filter { known.contains($0) }
+        if copy.catalogVersion < Self.currentCatalogVersion {
+            copy.setIDs = SpectralSet.defaultIDs
+            copy.catalogVersion = Self.currentCatalogVersion
+        }
+        let selected = Set(copy.setIDs)
+        copy.setIDs = SpectralSet.all.map(\.id).filter { selected.contains($0) }
         return copy
     }
 

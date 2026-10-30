@@ -1,27 +1,20 @@
 import Foundation
 
-/// 单向扫描协议：
-///   标记音（30 ms，集合专属频率） + 保护间隔（10 ms） +
-///   OFDM 训练符号 + S 个数据符号（每符号 20 ms + 5 ms 循环前缀） + 结尾静音（20 ms）
+/// 单向扫描协议，调制解调与 watercomms 对齐：
+///   Naiser3 前导（9360） + ChirpGap（960） + OFDM 训练符号 + 数据符号（Ns=960，Cp=67）
 ///
-/// 标记音同时承担同步和集合识别；数据帧里没有前导、没有握手、没有 CRC。
+/// 集合只改变子载波频段。帧里没有 400 Hz 标记音，没有握手，没有 CRC。
 enum ScanProtocol {
     static let sampleRate: Double = 48_000
-    static let symbolLength = 960
-    static let cyclicPrefix = 240
+    static let symbolLength = WatercommsPhy.ns
+    static let cyclicPrefix = WatercommsPhy.cp
     static let symbolSamples = symbolLength + cyclicPrefix
+    static let chirpGap = WatercommsPhy.gap
 
-    static let markerMs: Double = 30
-    static let markerHz: Double = 400
-    static let guardMs: Double = 10
-    static let tailMs: Double = 20
+    static var preambleSamples: Int { WatercommsPhy.preamble.count }
 
-    static let markerSamples = Int(markerMs / 1_000 * sampleRate)
-    static let guardSamples = Int(guardMs / 1_000 * sampleRate)
-    static let tailSamples = Int(tailMs / 1_000 * sampleRate)
-
-    /// 数据符号（含训练符号）之前的总偏移：标记音 + 保护间隔。
-    static let dataStartOffset = markerSamples + guardSamples
+    /// 训练符号（含循环前缀）之前的偏移：前导 + ChirpGap。
+    static var dataStartOffset: Int { preambleSamples + chirpGap }
 
     static func dataSymbols(for set: SpectralSet) -> Int { set.dataSymbols }
 
@@ -30,7 +23,7 @@ enum ScanProtocol {
     }
 
     static func frameSamples(for set: SpectralSet) -> Int {
-        markerSamples + guardSamples + dataSamples(for: set) + tailSamples
+        preambleSamples + chirpGap + dataSamples(for: set)
     }
 
     static func expectedSeconds(for config: ScanRunConfig) -> Double {
@@ -42,33 +35,11 @@ enum ScanProtocol {
     }
 
     static func plan(for set: SpectralSet) -> OFDMModem.Plan {
-        OFDMModem.plan(
-            carriers: set.carriers,
-            sampleRate: sampleRate,
-            ns: symbolLength,
-            cp: cyclicPrefix,
-            preamble: [],
-            gap: 0,
-            bitCount: ConvolutionalCode.encodedBitCount
-        )
+        WatercommsPhy.plan(for: set)
     }
 
     static func makeFrame(payload: UInt64, set: SpectralSet) -> [Float] {
-        let marker = tone(frequency: ScanProtocol.markerHz, durationMs: markerMs, amplitude: 0.98)
-        let guardGap = [Float](repeating: 0, count: Self.guardSamples)
-        let bits = PacketLayout.bits(for: PacketLayout.data(from: payload))
-        let coded = ConvolutionalCode.encode(bits)
-        let plan = plan(for: set)
-        let data = OFDMModem.render(bits: coded, plan: plan)
-        let tailGap = [Float](repeating: 0, count: Self.tailSamples)
-
-        var frame: [Float] = []
-        frame.reserveCapacity(frameSamples(for: set))
-        frame.append(contentsOf: marker)
-        frame.append(contentsOf: guardGap)
-        frame.append(contentsOf: data)
-        frame.append(contentsOf: tailGap)
-        return frame
+        WatercommsPhy.makeFrame(payload: payload, set: set)
     }
 
     static func tone(frequency: Double, durationMs: Double, amplitude: Float) -> [Float] {

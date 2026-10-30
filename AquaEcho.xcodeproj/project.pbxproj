@@ -37,6 +37,8 @@
 /* Begin PBXFileReference section */
 		A10000000000000000000004 /* AquaEcho.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AquaEcho.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000005 /* AquaEchoWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AquaEchoWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000030 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
+		A10000000000000000000031 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -78,6 +80,26 @@
 			path = Shared;
 			sourceTree = "<group>";
 		};
+		A10000000000000000000032 /* Tests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000033 /* Reference */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Reference;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000034 /* docs */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = docs;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000035 /* Scripts */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Scripts;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -104,6 +126,12 @@
 				A10000000000000000000008 /* AquaEcho */,
 				A10000000000000000000009 /* AquaEchoWatch */,
 				A1000000000000000000000A /* Shared */,
+				A10000000000000000000032 /* Tests */,
+				A10000000000000000000033 /* Reference */,
+				A10000000000000000000034 /* docs */,
+				A10000000000000000000035 /* Scripts */,
+				A10000000000000000000030 /* Package.swift */,
+				A10000000000000000000031 /* README.md */,
 				A10000000000000000000007 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -375,7 +403,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AquaEcho/AquaEcho.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 40;
+				CURRENT_PROJECT_VERSION = 41;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEcho/Info.plist;
@@ -411,7 +439,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AquaEcho/AquaEcho.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 40;
+				CURRENT_PROJECT_VERSION = 41;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEcho/Info.plist;
@@ -447,7 +475,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AquaEchoWatch/AquaEchoWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 40;
+				CURRENT_PROJECT_VERSION = 41;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEchoWatch/Info.plist;
@@ -481,7 +509,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AquaEchoWatch/AquaEchoWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 40;
+				CURRENT_PROJECT_VERSION = 41;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AquaEchoWatch/Info.plist;

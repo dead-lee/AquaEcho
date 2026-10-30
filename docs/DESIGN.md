@@ -1,6 +1,6 @@
 # AquaEcho 设计基线
 
-最后更新：2026-10-26（35：started 保留 + 停止不阻塞）
+最后更新：2026-10-30（同步后加 Matlab 信道回看；失焦不停止播放）
 
 本文是代码修改的权威依据。任何代码改动前，必须先更新本文；代码 review、自测、真机安装都以本文为准。
 
@@ -23,11 +23,19 @@
 
 ## 3. 调制解调
 
-- 帧：30 ms 公共 400 Hz 标记音 + 10 ms guard + OFDM 训练 + S 个数据符号（20 ms + 5 ms CP）+ 20 ms 尾静音。
+实时收发只走 watercomms 对齐版，不再使用 400 Hz 标记音或 Cp=240。
+
+- 帧：Naiser3 前导 9360 样本 + ChirpGap 960 + 训练符号 + 数据符号。Ns=960，Cp=67，无额外尾静音。
+- 每个符号的循环前缀与 Java 一致：取 `symbol[Ns-Cp-1 ..< Ns-1]` 共 67 点，再拼上 960 点符号体。接收端跳过这 67 点后做 FFT。
+- 训练比特：`pn60` 的前 K 位。K>60 时循环 pn60（watercomms 原版只有 60 个子载波）。
+- 数据比特按 watercomms 在各符号间均分，不足一个符号的位置用 `java.util.Random(1)` 填充，再按符号序号交织，再相对上一符号做差分 BPSK。
+- 均衡：训练符号频域单抽头 `G = X/Y`，数据符号乘 G 后做差分解调。
+- 播放幅度按峰值归一化到 0.98。watercomms 的 int16 缩放是 `32767/N/子载波数`，波形形状相同，电平不同。
+- 同步：FFT 归一化互相关，阈值 0.4，峰距至少 8000 样本；再按 watercomms `seekback(960, 0.4×峰)` 取相关峰前缘。然后按 Matlab `find_symbol` / `channe_look_back` 做信道回看：取起点前 300 点、长度等于前导的一段，只在前导所在的 1–4 kHz 上估计 `H = Y/X`，IFFT 后取噪声门限以上的最早径，作为真正的前导起点。不做 96 阶 800–4000 Hz FIR。解调仍只在 ±Cp（±67）里找残余定时。
+- 弱载波：watercomms 的 `Fre_adaptation` 是发之前用反馈选一段连续高信噪比载波，不是单向解调里的擦除。单向扫描不加入这步。
+- 频段是唯一允许不同的参数。W0 为原版 1–4 kHz（60 个子载波）。S0–S6 只改频段。
 - 载荷：8 bit 集合号 + 16 bit 包序号 + 40 bit SplitMix64；手机自校验。
-- 标记音在数据频段之外；接收器只扫 400 Hz。
 - 手机 `ScanReceiver` 流式处理；结果实时更新。
-- 已知弱项：S3（4–8 kHz）在 08:20 实测为 7/20；整体 124/140（88.6%）。S3 单独评估，不作为全局失败。
 
 ## 4. 极简控制面（声波测试优先）
 
@@ -70,14 +78,15 @@
 | 项 | watercomms | 当前 |
 |---|---|---|
 | Ns | 960 | 960 |
-| CP | **67** | **240** |
-| 前导 | **Naiser3 9360 样本 + ChirpGap 960** | **400 Hz 标记 30 ms + guard 10 ms** |
-| 同步 | 前导互相关 + seekback | 标记音过阈值 |
-| 信道估计 | **训练符号频域均衡**，可选时域均衡 | 训练符号单抽头 |
-| 调制 | 差分 BPSK-OFDM | 差分 BPSK-OFDM |
-| 卷积码/交织 | `{7,5,10}` / JavaRandom | 同 |
-| 帧尾 | 无额外 tail | 20 ms tail |
-| 频率 | 1000–4000 Hz 基准 | 0.5–8 kHz 多集合 |
+| CP | 67，`symbol[Ns-Cp-1 ..< Ns-1]` | 同 |
+| 前导 | Naiser3 9360 + ChirpGap 960 | 同 |
+| 同步 | 前导互相关 + seekback + 信道回看最早径 | 同；不做 800–4000 Hz FIR |
+| 信道估计 | 训练符号频域均衡 | 同，`G = X/Y` |
+| 调制 | 差分 BPSK-OFDM | 同；播放峰值归一化到 0.98 |
+| 比特装载 | 符号间均分 + `Random(1)` 填充 | 同 |
+| 卷积码/交织 | `{7,5,10}` / JavaRandom(符号序号) | 同 |
+| 帧尾 | 无额外 tail | 无 |
+| 频率 | 1000–4000 Hz | W0 同左；S0–S6 只改频段 |
 
 ### 10.3 对齐原则
 
@@ -88,11 +97,11 @@
 
 ### 10.4 实施步骤
 
-1. `WatercommsPhy`：加载 `naiser3` 9360 样本；帧 = preamble + 960 gap + (training + data)*(960+67)；
-2. TX：训练符号 + 差分 BPSK + 卷积码/交织，不用 400 marker；
-3. RX：前导互相关定位、跳过 gap/CP、训练符号频域均衡、差分解调；
-4. 先 1–4 kHz，再跑 S0–S6；
-5. 记录前导相关峰、频偏、均衡系数、每集合成功率。
+1. `WatercommsPhy`：加载 `naiser3` 9360 样本；帧 = preamble + 960 gap + (training + data)*(960+67)。已接入 `ScanProtocol.makeFrame`。
+2. TX：训练符号 + 差分 BPSK + 卷积码/交织，不用 400 marker。
+3. RX：FFT 前导互相关、seekback、信道回看最早径、跳过 gap/CP、训练符号频域均衡、差分解调。
+4. 同一次扫描发送 W0 和 S0–S6。手机里旧配置升级时会把这些频段全部打开；之后仍可在配置页关掉某一组。
+5. 日志记录前导相关峰和每集合成功率。频偏、均衡系数留到下一轮诊断。
 
 ### 10.5 测试矩阵
 
@@ -125,14 +134,14 @@
 
 - set ID、packet index、payload hex；
 - 帧样本数、airtime、carrier 数、data symbols；
-- marker 频率；
+- 前导样本数、Cp、Ns；
 - 调度发送时间；
 - 音频路由、采样率、系统音量、engine/player 状态。
 
 ### 手机 RX
 
 - 录音链路：输入路由、采样率、声道、session category、是否 running；
-- 每个 marker：样本位置、marker SNR、候选集合、数据窗口范围；
+- 每个前导：样本位置、归一化相关、seekback 后起点、候选集合、数据窗口范围；
 - 成功帧：set、packet、data SNR、offset；
 - 失败帧：未匹配原因/候选数，不改变原有失败判定。
 
@@ -200,6 +209,8 @@
 3. **后台 workout 策略**：`WorkoutStartPolicy`，background 必须拒绝启动。
 4. **日志 UI 合流**：`LogUIBatcher`，大量日志只能触发有限次数 UI 更新，且保留尾部内容。
 5. **停止异步**：`StopHandoff`，停止调用必须立即返回，慢 finish 不得阻塞调用线程。
+6. **信道回看**：相关峰故意晚 112 点时，`channelLookbackStart` 把起点拉回，S2 整包能解出。只喂样本，不提供手表状态。
+7. **失焦不等于停止**：`WatchRuntimePolicy` 对 `willResignActive` 保持播放；只有 `didEnterBackground` 才停止并结束 workout。手机 `ScanReceiver` 没有手表状态参数，一段合法录音必须解出。
 
 测试命令：`swift test`。
 

@@ -3,7 +3,7 @@ import Foundation
 enum ScanCSVExporter {
     static let headers = [
         "场景", "距离cm", "备注", "集合", "集合名称", "子载波数", "包序号",
-        "是否检出", "通过", "期望hex", "解出hex", "SNR_dB", "标记SNR_dB",
+        "是否检出", "通过", "期望hex", "解出hex", "SNR_dB", "前导相关",
         "airtime_ms", "接收时间", "构建"
     ]
 

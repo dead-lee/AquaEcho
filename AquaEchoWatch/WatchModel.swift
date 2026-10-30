@@ -4,7 +4,7 @@ import HealthKit
 import SwiftUI
 
 /// 手表端扫描发送器：workout session 负责保活，音频只负责发波。
-/// 序列固定为“集合列表 × 每组包数”，每包 = 标记音 + 保护间隔 + OFDM 数据。
+/// 序列固定为“集合列表 × 每组包数”，每包 = Naiser3 前导 + ChirpGap + OFDM 符号。
 @MainActor
 final class WatchModel: ObservableObject {
     @Published private(set) var status = "等待手机同步场景"
@@ -76,7 +76,12 @@ final class WatchModel: ObservableObject {
         }
         WatchActivation.onWillResignActive = { [weak self] in
             self?.log("applicationWillResignActive")
-            self?.flushLogs(force: true)
+            switch WatchRuntimePolicy.playbackEffect(willResignActive: true, didEnterBackground: false) {
+            case .keepPlaying:
+                self?.flushLogs(force: true)
+            case .stopAndEndWorkout:
+                self?.handleEnterBackground()
+            }
         }
         WatchActivation.onDidEnterBackground = { [weak self] in
             self?.handleEnterBackground()
@@ -229,6 +234,9 @@ final class WatchModel: ObservableObject {
     }
 
     private func handleEnterBackground() {
+        guard WatchRuntimePolicy.playbackEffect(willResignActive: false, didEnterBackground: true) == .stopAndEndWorkout else {
+            return
+        }
         log("applicationDidEnterBackground；结束 workout")
         flushLogs(force: true)
         if isRunning { stop() }
@@ -270,7 +278,7 @@ final class WatchModel: ObservableObject {
                     let date = try await player.play(samples: frame, leadSamples: 0)
                     let payloadHex = ScanPayload.hex(payload)
                     let txLine = String(
-                        format: "TX 集合=%@ 包=%d 载荷=%@ 样本=%d 空中=%.1fms 载波=%d 数据符号=%d 标记=%dHz 发送时间=%@ 音频[%@]",
+                        format: "TX 集合=%@ 包=%d 载荷=%@ 样本=%d 空中=%.1fms 载波=%d 数据符号=%d 前导=Naiser3 Cp=%d Ns=%d 发送时间=%@ 音频[%@]",
                         locale: Locale(identifier: "en_US_POSIX"),
                         set.id,
                         index,
@@ -279,7 +287,8 @@ final class WatchModel: ObservableObject {
                         Double(frame.count) / ScanProtocol.sampleRate * 1_000,
                         set.carrierCount,
                         set.dataSymbols,
-                        Int(ScanProtocol.markerHz),
+                        WatercommsPhy.cp,
+                        WatercommsPhy.ns,
                         RunLog.timestamp(date),
                         player.diagnostics
                     )

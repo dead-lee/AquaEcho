@@ -38,7 +38,7 @@ enum OFDMModem {
         var readings: [SymbolReading]
     }
 
-    /// 显式子载波集合的计划。扫描模式前导为空（标记音负责同步），间隔为 0。
+    /// 显式子载波集合的计划。前导和间隔由调用方传入；watercomms 对齐版使用 Naiser3 和 960 点间隔。
     static func plan(
         carriers: [Int],
         sampleRate: Double,
@@ -75,7 +75,7 @@ enum OFDMModem {
         )
     }
 
-    /// 渲染训练符号 + 数据符号；不负责标记音和尾静音。
+    /// 渲染前导、间隔、训练符号和数据符号。
     static func render(bits: [Bool], plan: Plan) -> [Float] {
         var output: [Float] = []
         output.reserveCapacity(plan.packetSamples)
@@ -91,7 +91,7 @@ enum OFDMModem {
             var data = Array(bits[cursor..<(cursor + count)])
             cursor += count
             if data.count < plan.carriers.count {
-                data.append(contentsOf: repeatElement(false, count: plan.carriers.count - data.count))
+                data.append(contentsOf: padBits(count: plan.carriers.count - data.count))
             }
             let arranged = interleave(data, symbolIndex: symbolIndex)
             let transmitted = zip(previous, arranged).map { $0 != $1 }
@@ -291,13 +291,22 @@ enum OFDMModem {
         return body
     }
 
+    /// watercomms `SymbolGeneration`：`cp[i] = symbol[(Ns - Cp - 1) + i]`，不包含最后一个样本。
     private static func withPrefix(_ body: [Float], cp: Int) -> [Float] {
-        guard cp > 0 else { return body }
+        guard cp > 0, body.count > cp else { return body }
+        let start = body.count - cp - 1
         var output: [Float] = []
         output.reserveCapacity(cp + body.count)
-        output.append(contentsOf: body[(body.count - cp)...])
+        output.append(contentsOf: body[start..<(start + cp)])
         output.append(contentsOf: body)
         return output
+    }
+
+    /// `Utils.random_array`：每次从 `java.util.Random(1)` 重新开始，取 `nextInt(2)`。
+    private static func padBits(count: Int) -> [Bool] {
+        guard count > 0 else { return [] }
+        var random = JavaRandom(seed: 1)
+        return (0..<count).map { _ in random.nextInt(2) == 1 }
     }
 
     private static func trainingBits(count: Int) -> [Bool] {
@@ -306,16 +315,14 @@ enum OFDMModem {
         return (0..<count).map { pattern[$0 % pattern.count] }
     }
 
+    /// watercomms `generateDataSymbols`：符号数是 ceil(bits/carriers)，比特尽量均分。
+    /// 前 `bits % rounds` 个符号多 1 比特，其余是 floor(bits/rounds)。
     private static func split(bitCount: Int, carriers: Int) -> [Int] {
         guard carriers > 0, bitCount > 0 else { return [] }
-        var left = bitCount
-        var counts: [Int] = []
-        while left > 0 {
-            let take = min(carriers, left)
-            counts.append(take)
-            left -= take
-        }
-        return counts
+        let rounds = (bitCount + carriers - 1) / carriers
+        let base = bitCount / rounds
+        let extra = bitCount % rounds
+        return (0..<rounds).map { $0 < extra ? base + 1 : base }
     }
 
     private static func noiseBins(around band: ClosedRange<Int>, nyquist: Int) -> [Int] {
