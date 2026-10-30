@@ -1,12 +1,70 @@
 import Foundation
 import Accelerate
 
-/// watercomms 对齐版 PHY：Naiser3 前导 + 960 gap + 训练/数据符号，Ns=960、Cp=67。
+/// watercomms 对齐版 PHY：Naiser 结构前导 + 960 gap + 训练/数据符号，Ns=960、Cp=67。
+/// 前导频段与该集合的数据频段相同。W0 用原版 naiser3 样本。
 enum WatercommsPhy {
     static let ns = 960
     static let cp = 67
     static let gap = 960
+    /// 原版 1–4 kHz naiser3。W0 和旧调用点用它。
     static var preamble: [Float] { WatercommsPreamble.samples }
+
+    private static let bandPreambles: [String: [Float]] = {
+        Dictionary(uniqueKeysWithValues: SpectralSet.all.map { set in
+            let samples = (set.lowHz == 1_000 && set.highHz == 4_000)
+                ? WatercommsPreamble.samples
+                : synthesizedPreamble(lowHz: set.lowHz, highHz: set.highHz)
+            return (set.id, samples)
+        })
+    }()
+
+    static func preamble(for set: SpectralSet) -> [Float] {
+        bandPreambles[set.id] ?? synthesizedPreamble(lowHz: set.lowHz, highHz: set.highHz)
+    }
+
+    /// watercomms 对 1–4 kHz 用 800–4000 Hz。通带是数据下沿减 200 Hz 到上沿。
+    static func syncBand(for set: SpectralSet) -> (lowHz: Double, highHz: Double) {
+        let low = max(50, set.lowHz - 200)
+        let high = min(ScanProtocol.sampleRate / 2 - 100, set.highHz)
+        return (low, high)
+    }
+
+    /// 8 段 960 点下扫，段间 240 点空白，符号与 naiser3 相同。长度 9360。
+    private static func synthesizedPreamble(lowHz: Double, highHz: Double) -> [Float] {
+        let chirpCount = 960
+        let gapCount = 240
+        let signs: [Float] = [1, -1, -1, -1, -1, -1, 1, -1]
+        let chirp = downchirp(from: highHz, to: lowHz, count: chirpCount)
+        var output: [Float] = []
+        output.reserveCapacity(signs.count * chirpCount + (signs.count - 1) * gapCount)
+        for (index, sign) in signs.enumerated() {
+            if index > 0 {
+                output.append(contentsOf: repeatElement(0, count: gapCount))
+            }
+            output.append(contentsOf: chirp.map { $0 * sign })
+        }
+        return output
+    }
+
+    private static func downchirp(from highHz: Double, to lowHz: Double, count: Int) -> [Float] {
+        let sampleRate = ScanProtocol.sampleRate
+        let duration = Double(count) / sampleRate
+        var chirp = [Float](repeating: 0, count: count)
+        var peak: Float = 0
+        for index in 0..<count {
+            let time = Double(index) / sampleRate
+            let phase = 2 * Double.pi * (highHz * time + (lowHz - highHz) * time * time / (2 * duration))
+            let sample = Float(sin(phase))
+            chirp[index] = sample
+            peak = max(peak, abs(sample))
+        }
+        let scale = 0.95 / max(peak, 1e-6)
+        for index in chirp.indices {
+            chirp[index] *= scale
+        }
+        return chirp
+    }
 
     static func plan(for set: SpectralSet) -> OFDMModem.Plan {
         OFDMModem.plan(
@@ -14,7 +72,7 @@ enum WatercommsPhy {
             sampleRate: ScanProtocol.sampleRate,
             ns: ns,
             cp: cp,
-            preamble: preamble,
+            preamble: preamble(for: set),
             gap: gap,
             bitCount: ConvolutionalCode.encodedBitCount
         )
@@ -31,9 +89,21 @@ enum WatercommsPhy {
         var score: Float
     }
 
+    private static let fftLock = NSLock()
+    private static var fftSetups: [Int: FFTSetup] = [:]
+    private static var kernelSpectra: [String: (real: [Float], imag: [Float])] = [:]
+
+    private static func cachedFFTSetup(log2n: Int) -> FFTSetup? {
+        if let setup = fftSetups[log2n] { return setup }
+        guard let setup = vDSP_create_fftsetup(vDSP_Length(log2n), FFTRadix(kFFTRadix2)) else { return nil }
+        fftSetups[log2n] = setup
+        return setup
+    }
+
     /// 归一化互相关。lag 处的值是前导与 `signal[lag..<lag+P]` 的相关系数。
-    static func preambleScores(in signal: [Float]) -> [Float] {
-        let kernel = preamble
+    /// `cacheKey` 给定时复用该前导的频谱。FFT 计划按长度复用，数值与每次新建相同。
+    static func preambleScores(in signal: [Float], kernel: [Float]? = nil, cacheKey: String? = nil) -> [Float] {
+        let kernel = kernel ?? preamble
         let sampleCount = signal.count
         let kernelCount = kernel.count
         let lags = sampleCount - kernelCount + 1
@@ -50,15 +120,27 @@ enum WatercommsPhy {
             fftLength <<= 1
             log2n += 1
         }
-        guard let setup = vDSP_create_fftsetup(vDSP_Length(log2n), FFTRadix(kFFTRadix2)) else { return [] }
-        defer { vDSP_destroy_fftsetup(setup) }
+        fftLock.lock()
+        defer { fftLock.unlock() }
+        guard let setup = cachedFFTSetup(log2n: log2n) else { return [] }
 
         var signalReal = [Float](repeating: 0, count: fftLength)
         var signalImag = [Float](repeating: 0, count: fftLength)
-        var kernelReal = [Float](repeating: 0, count: fftLength)
-        var kernelImag = [Float](repeating: 0, count: fftLength)
         signalReal.replaceSubrange(0..<sampleCount, with: signal)
-        kernelReal.replaceSubrange(0..<kernelCount, with: kernel)
+        let spectrumKey = cacheKey.map { "\($0)#\(fftLength)" }
+        var kernelReal: [Float]
+        var kernelImag: [Float]
+        let kernelIsSpectrum: Bool
+        if let spectrumKey, let cached = kernelSpectra[spectrumKey] {
+            kernelReal = cached.real
+            kernelImag = cached.imag
+            kernelIsSpectrum = true
+        } else {
+            kernelReal = [Float](repeating: 0, count: fftLength)
+            kernelImag = [Float](repeating: 0, count: fftLength)
+            kernelReal.replaceSubrange(0..<kernelCount, with: kernel)
+            kernelIsSpectrum = false
+        }
 
         var productReal = [Float](repeating: 0, count: fftLength)
         var productImag = [Float](repeating: 0, count: fftLength)
@@ -81,7 +163,9 @@ enum WatercommsPhy {
                                     imagp: productImagBuffer.baseAddress!
                                 )
                                 vDSP_fft_zip(setup, &signalSplit, 1, vDSP_Length(log2n), FFTDirection(FFT_FORWARD))
-                                vDSP_fft_zip(setup, &kernelSplit, 1, vDSP_Length(log2n), FFTDirection(FFT_FORWARD))
+                                if !kernelIsSpectrum {
+                                    vDSP_fft_zip(setup, &kernelSplit, 1, vDSP_Length(log2n), FFTDirection(FFT_FORWARD))
+                                }
                                 // conj(kernel) * signal。vDSP_zvmul 的共轭作用在第一个输入上。
                                 vDSP_zvmul(&kernelSplit, 1, &signalSplit, 1, &productSplit, 1, vDSP_Length(fftLength), -1)
                                 vDSP_fft_zip(setup, &productSplit, 1, vDSP_Length(log2n), FFTDirection(FFT_INVERSE))
@@ -90,6 +174,9 @@ enum WatercommsPhy {
                     }
                 }
             }
+        }
+        if let spectrumKey, !kernelIsSpectrum {
+            kernelSpectra[spectrumKey] = (kernelReal, kernelImag)
         }
 
         var correlation = productReal
@@ -141,15 +228,13 @@ enum WatercommsPhy {
         return kept
     }
 
-    /// Matlab `find_symbol` 的 96 阶 800–4000 Hz FIR。只给同步用。
+    /// Matlab `find_symbol` 的 96 阶 FIR。只给同步用。
     /// 输出与输入等长。vDSP 卷积把对称 FIR 的峰提前 `syncFilterDelay` 点，调用方要把峰下标加回。
     static let syncFilterOrder = 96
     static let syncFilterDelay = syncFilterOrder / 2
 
-    static let syncFilter: [Float] = {
+    static func syncFilter(lowHz: Double, highHz: Double) -> [Float] {
         let fs = ScanProtocol.sampleRate
-        let low = 800.0
-        let high = 4_000.0
         let order = syncFilterOrder
         var taps = [Float](repeating: 0, count: order + 1)
         let mid = order / 2
@@ -157,18 +242,18 @@ enum WatercommsPhy {
             let offset = Double(index - mid)
             let ideal: Double
             if offset == 0 {
-                ideal = 2 * (high - low) / fs
+                ideal = 2 * (highHz - lowHz) / fs
             } else {
-                ideal = (sin(2 * .pi * high * offset / fs) - sin(2 * .pi * low * offset / fs)) / (.pi * offset)
+                ideal = (sin(2 * .pi * highHz * offset / fs) - sin(2 * .pi * lowHz * offset / fs)) / (.pi * offset)
             }
             let window = 0.54 - 0.46 * cos(2 * .pi * Double(index) / Double(order))
             taps[index] = Float(ideal * window)
         }
         return taps
-    }()
+    }
 
-    static func bandpassForSync(_ samples: [Float]) -> [Float] {
-        let taps = syncFilter
+    static func bandpassForSync(_ samples: [Float], lowHz: Double, highHz: Double) -> [Float] {
+        let taps = syncFilter(lowHz: lowHz, highHz: highHz)
         guard !samples.isEmpty, taps.count > 1 else { return samples }
         // vDSP_conv 读取 signal[n + p]，输入要比结果长 P-1。
         var padded = samples
@@ -194,6 +279,12 @@ enum WatercommsPhy {
         return filtered
     }
 
+    /// W0 的 800–4000 Hz。其他集合用 `bandpassForSync(_:lowHz:highHz:)`。
+    static func bandpassForSync(_ samples: [Float]) -> [Float] {
+        let band = syncBand(for: SpectralSet.set(id: "W0") ?? SpectralSet.all[0])
+        return bandpassForSync(samples, lowHz: band.lowHz, highHz: band.highHz)
+    }
+
     /// watercomms `seekback`：在峰前 `seek` 点内，取第一个超过 `ratio * 峰` 的位置。
     static func seekback(scores: [Float], peak: Int, seek: Int = gap, ratio: Float = 0.4) -> Int {
         guard scores.indices.contains(peak) else { return max(0, peak) }
@@ -206,27 +297,39 @@ enum WatercommsPhy {
     }
 
     /// Matlab `find_symbol` 在 seekback 之后把窗口起点前移 300 点，
-    /// `channe_look_back` 取 1–4 kHz 信道冲激里噪声门限以上的最早径。
+    /// `channe_look_back` 取该集合频段里噪声门限以上的最早径。
     static let channelLookbackLead = 300
 
-    static func channelLookbackStart(samples: [Float], seekbackLag: Int) -> Int {
-        let count = preamble.count
+    static func channelLookbackStart(
+        samples: [Float],
+        seekbackLag: Int,
+        preamble template: [Float],
+        lowHz: Double,
+        highHz: Double
+    ) -> Int {
+        let count = template.count
         let lead = channelLookbackLead
         let windowStart = seekbackLag - lead
         guard windowStart >= 0, windowStart + count <= samples.count else { return seekbackLag }
         let segment = Array(samples[windowStart..<(windowStart + count)])
         // 窗口已经从相关峰前移 300 点。合理的直达/反射径落在这 600 点里。
         // 冲激最大点若跑到几千点之外，是估计失败，保持 seekback，不能把帧起点甩走。
-        guard let delay = earliestPreamblePath(segment: segment), delay <= 600 else { return seekbackLag }
+        guard let delay = earliestPreamblePath(segment: segment, template: template, lowHz: lowHz, highHz: highHz),
+              delay <= 600 else { return seekbackLag }
         let start = windowStart + delay
         guard start >= 0, start < samples.count else { return seekbackLag }
         return start
     }
 
-    private static func earliestPreamblePath(segment: [Float]) -> Int? {
+    private static func earliestPreamblePath(
+        segment: [Float],
+        template: [Float],
+        lowHz: Double,
+        highHz: Double
+    ) -> Int? {
         let fftLength = 16_384
         let log2n = 14
-        guard segment.count == preamble.count,
+        guard segment.count == template.count,
               let setup = vDSP_create_fftsetup(vDSP_Length(log2n), FFTRadix(kFFTRadix2)) else { return nil }
         defer { vDSP_destroy_fftsetup(setup) }
 
@@ -235,7 +338,7 @@ enum WatercommsPhy {
         var preambleReal = [Float](repeating: 0, count: fftLength)
         var preambleImag = [Float](repeating: 0, count: fftLength)
         receivedReal.replaceSubrange(0..<segment.count, with: segment)
-        preambleReal.replaceSubrange(0..<preamble.count, with: preamble)
+        preambleReal.replaceSubrange(0..<template.count, with: template)
 
         receivedReal.withUnsafeMutableBufferPointer { receivedRealBuffer in
             receivedImag.withUnsafeMutableBufferPointer { receivedImagBuffer in
@@ -250,16 +353,23 @@ enum WatercommsPhy {
             }
         }
 
-        let lowBin = Int((1_000 * Double(fftLength) / ScanProtocol.sampleRate).rounded())
-        let highBin = Int((4_000 * Double(fftLength) / ScanProtocol.sampleRate).rounded())
+        let lowBin = Int((lowHz * Double(fftLength) / ScanProtocol.sampleRate).rounded())
+        let highBin = Int((highHz * Double(fftLength) / ScanProtocol.sampleRate).rounded())
         var responseReal = [Float](repeating: 0, count: fftLength)
         var responseImag = [Float](repeating: 0, count: fftLength)
         if lowBin >= 1, highBin < fftLength / 2 {
+            var peakPower: Float = 0
+            for bin in lowBin...highBin {
+                let power = preambleReal[bin] * preambleReal[bin] + preambleImag[bin] * preambleImag[bin]
+                peakPower = max(peakPower, power)
+            }
+            // 重复啁啾的频谱有接近零的凹点。用这些格子做 Y/X 会把直达径推偏。
+            let floor = peakPower * 1e-4
             for bin in lowBin...highBin {
                 let xre = preambleReal[bin]
                 let xim = preambleImag[bin]
                 let power = xre * xre + xim * xim
-                guard power > 1e-12 else { continue }
+                guard power >= floor else { continue }
                 let yre = receivedReal[bin]
                 let yim = receivedImag[bin]
                 responseReal[bin] = (yre * xre + yim * xim) / power
@@ -311,17 +421,20 @@ enum WatercommsPhy {
         return peaks.first ?? path
     }
 
-    static func findPreambleStarts(in samples: [Float], limit: Int = 8) -> [Int] {
+    static func findPreambleStarts(in samples: [Float], set: SpectralSet, limit: Int = 8) -> [Int] {
+        let kernel = preamble(for: set)
+        let band = syncBand(for: set)
+        let filtered = bandpassForSync(samples, lowHz: band.lowHz, highHz: band.highHz)
         let peaks = preamblePeaks(
-            scores: preambleScores(in: samples),
+            scores: preambleScores(in: filtered, kernel: kernel),
             threshold: 0.15,
             minDistance: 2_000
         )
-        return peaks.prefix(limit).map(\.index)
+        return peaks.prefix(limit).map { $0.index + syncFilterDelay }
     }
 
-    static func findPreambleStart(in samples: [Float]) -> Int? {
-        findPreambleStarts(in: samples, limit: 1).first
+    static func findPreambleStart(in samples: [Float], set: SpectralSet) -> Int? {
+        findPreambleStarts(in: samples, set: set, limit: 1).first
     }
 
     static func decode(frame: [Float], set: SpectralSet) -> UInt64? {
@@ -329,7 +442,7 @@ enum WatercommsPhy {
     }
 
     static func decode(samples: [Float], start: Int, set: SpectralSet) -> UInt64? {
-        let dataStart = start + preamble.count + gap
+        let dataStart = start + preamble(for: set).count + gap
         guard dataStart >= 0, dataStart < samples.count else { return nil }
         let plan = plan(for: set)
         guard let demod = OFDMModem.demodulateFrequencyOnly(window: samples, symbolStart: dataStart, plan: plan) else { return nil }

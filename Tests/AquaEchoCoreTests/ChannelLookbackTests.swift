@@ -24,11 +24,16 @@ final class ChannelLookbackTests: XCTestCase {
         samples.replaceSubrange(trueStart..<(trueStart + frame.count), with: frame)
 
         let late = trueStart + 112
-        let start = WatercommsPhy.channelLookbackStart(samples: samples, seekbackLag: late)
+        let template = WatercommsPhy.preamble(for: set)
+        let start = WatercommsPhy.channelLookbackStart(
+            samples: samples, seekbackLag: late, preamble: template, lowHz: set.lowHz, highHz: set.highHz
+        )
         XCTAssertLessThan(abs(start - trueStart), abs(late - trueStart), "lookback=\(start) late=\(late) true=\(trueStart)")
         XCTAssertEqual(WatercommsPhy.decode(samples: samples, start: start, set: set), payload)
 
-        let aligned = WatercommsPhy.channelLookbackStart(samples: samples, seekbackLag: trueStart)
+        let aligned = WatercommsPhy.channelLookbackStart(
+            samples: samples, seekbackLag: trueStart, preamble: template, lowHz: set.lowHz, highHz: set.highHz
+        )
         XCTAssertLessThanOrEqual(abs(aligned - trueStart), WatercommsPhy.cp, "aligned=\(aligned)")
     }
 

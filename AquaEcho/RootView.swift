@@ -110,7 +110,7 @@ private struct TestScreen: View {
                         .controlSize(.large)
                         .disabled(model.isAnalyzing)
                     }
-                    Text("手机会请求手表同时开始扫描；收到 Naiser3 前导后实时解码，结果随包更新。停止后保存 WAV/CSV。")
+                    Text("手机会请求手表同时开始扫描；收到与该集合同频段的前导后实时解码，结果随包更新。停止后保存 WAV/CSV。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

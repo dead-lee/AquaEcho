@@ -1,9 +1,9 @@
 import Foundation
 
 /// 单向扫描协议，调制解调与 watercomms 对齐：
-///   Naiser3 前导（9360） + ChirpGap（960） + OFDM 训练符号 + 数据符号（Ns=960，Cp=67）
+///   本频段 Naiser 前导（9360） + ChirpGap（960） + OFDM 训练符号 + 数据符号（Ns=960，Cp=67）
 ///
-/// 集合只改变子载波频段。帧里没有 400 Hz 标记音，没有握手，没有 CRC。
+/// 集合改变子载波频段，前导下扫落在同一频段。帧里没有 400 Hz 标记音，没有握手，没有 CRC。
 enum ScanProtocol {
     static let sampleRate: Double = 48_000
     static let symbolLength = WatercommsPhy.ns

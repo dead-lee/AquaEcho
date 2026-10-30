@@ -294,7 +294,7 @@ final class WatchModel: ObservableObject {
                     capture.append(frame, startedAt: date)
                     let payloadHex = ScanPayload.hex(payload)
                     let txLine = String(
-                        format: "TX 集合=%@ 包=%d 载荷=%@ 样本=%d 空中=%.1fms 载波=%d 数据符号=%d 前导=Naiser3 Cp=%d Ns=%d 发送时间=%@ 音频[%@]",
+                        format: "TX 集合=%@ 包=%d 载荷=%@ 样本=%d 空中=%.1fms 载波=%d 数据符号=%d 前导=%d-%dHz Cp=%d Ns=%d 发送时间=%@ 音频[%@]",
                         locale: Locale(identifier: "en_US_POSIX"),
                         set.id,
                         index,
@@ -303,6 +303,8 @@ final class WatchModel: ObservableObject {
                         Double(frame.count) / ScanProtocol.sampleRate * 1_000,
                         set.carrierCount,
                         set.dataSymbols,
+                        Int(set.lowHz),
+                        Int(set.highHz),
                         WatercommsPhy.cp,
                         WatercommsPhy.ns,
                         RunLog.timestamp(date),
