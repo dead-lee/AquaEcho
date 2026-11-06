@@ -351,9 +351,8 @@ final class ScanReceiver {
         guard local >= 0, local + symbolCount <= window.count else { return nil }
         let plan = ScanProtocol.plan(for: set)
         guard let demod = OFDMModem.demodulateFrequencyOnly(window: window, symbolStart: local, plan: plan) else { return nil }
-        let coded = demod.bits
         let snr = demod.readings.isEmpty ? 0 : demod.readings.reduce(0) { $0 + $1.snrDB } / Double(demod.readings.count)
-        let decoded = ConvolutionalCode.decode(coded)
+        let decoded = ConvolutionalCode.decode(demod.soft)
         guard decoded.count == PacketLayout.bitCount else { return nil }
         let word = word(from: decoded)
         let setCode = ScanPayload.setCode(of: word)

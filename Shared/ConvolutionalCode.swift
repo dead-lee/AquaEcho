@@ -55,20 +55,22 @@ enum ConvolutionalCode {
         return encoded
     }
 
-    static func decode(_ bits: [Bool]) -> [Bool] {
+    /// 软判决维特比。`soft` 大于 0 表示 1，绝对值是可信度。
+    /// 分支度量是软值与期望比特的相关，取累计最小。
+    static func decode(_ soft: [Double]) -> [Bool] {
         let stateCount = 1 << (constraintLength - 1)
-        var path = [Int](repeating: Int.max, count: stateCount)
+        var path = [Double](repeating: .infinity, count: stateCount)
         path[0] = 0
         var trellis: [[Int]] = []
-        trellis.reserveCapacity(bits.count / 2 + 1)
+        trellis.reserveCapacity(soft.count / 2 + 1)
+        let lowMask = (1 << (constraintLength - 2)) - 1
         var index = 0
-        while index < bits.count {
-            let first = bits[index]
-            let second = index + 1 < bits.count ? bits[index + 1] : false
+        while index < soft.count {
+            let first = soft[index]
+            let second = index + 1 < soft.count ? soft[index + 1] : 0
             index += 2
-            var nextPath = [Int](repeating: 0, count: stateCount)
+            var nextPath = [Double](repeating: .infinity, count: stateCount)
             var column = [Int](repeating: 0, count: stateCount)
-            let lowMask = (1 << (constraintLength - 2)) - 1
             for state in 0..<stateCount {
                 let shifted = (state & lowMask) << 1
                 let firstMetric = metric(path: path, source: shifted, target: state, first: first, second: second)
@@ -86,7 +88,7 @@ enum ConvolutionalCode {
         }
 
         var state = 0
-        var best = Int.max
+        var best = Double.infinity
         for candidate in path.indices where path[candidate] < best {
             best = path[candidate]
             state = candidate
@@ -103,15 +105,12 @@ enum ConvolutionalCode {
         return Array(decoded.dropLast(flush))
     }
 
-    private static func metric(path: [Int], source: Int, target: Int, first: Bool, second: Bool) -> Int {
+    private static func metric(path: [Double], source: Int, target: Int, first: Double, second: Double) -> Double {
         let previous = path[source]
-        guard previous < Int.max else { return Int.max }
+        guard previous.isFinite else { return .infinity }
         let input = (target >> (constraintLength - 2)) & 1
         let expected = output(state: source, input: input)
-        var distance = previous
-        if (first ? 1 : 0) != Int(expected.first) { distance += 1 }
-        if (second ? 1 : 0) != Int(expected.second) { distance += 1 }
-        return distance
+        return previous + (expected.first == 1 ? -first : first) + (expected.second == 1 ? -second : second)
     }
 
     private static func output(state: Int, input: Int) -> Parity {

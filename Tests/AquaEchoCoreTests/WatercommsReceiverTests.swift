@@ -3,7 +3,7 @@ import XCTest
 
 final class WatercommsReceiverTests: XCTestCase {
     func testChunkedCaptureDecodesWatercommsFrame() {
-        let set = try! XCTUnwrap(SpectralSet.set(id: "S0"))
+        let set = try! XCTUnwrap(SpectralSet.set(id: "C8"))
         var config = ScanRunConfig()
         config.setIDs = [set.id]
         config.packetsPerSet = 1

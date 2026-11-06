@@ -304,7 +304,7 @@ private struct ConfigScreen: View {
                             }
                         }
                     }
-                    Text("默认一次扫 E16、S1，每组 20 包。这是空气里通过率最高的两组差分 OFDM。")
+                    Text("一次扫 C8、A40，每组 20 包。这是空气和密封袋里通过率最高、又互补的两组差分 OFDM。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

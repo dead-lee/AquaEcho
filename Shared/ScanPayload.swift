@@ -10,7 +10,7 @@ enum ScanPayload {
     static let mask40: UInt64 = (UInt64(1) << 40) - 1
 
     static func make(setID: String, packetIndex: Int) -> UInt64 {
-        let code = SpectralSet.all.firstIndex(where: { $0.id == setID }) ?? 0
+        let code = SpectralSet.set(id: setID)?.code ?? 0
         return make(setCode: code, packetIndex: packetIndex)
     }
 

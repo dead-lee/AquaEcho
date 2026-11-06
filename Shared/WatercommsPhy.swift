@@ -320,7 +320,7 @@ enum WatercommsPhy {
         guard dataStart >= 0, dataStart < samples.count else { return nil }
         let plan = plan(for: set)
         guard let demod = OFDMModem.demodulateFrequencyOnly(window: samples, symbolStart: dataStart, plan: plan) else { return nil }
-        let decoded = ConvolutionalCode.decode(demod.bits)
+        let decoded = ConvolutionalCode.decode(demod.soft)
         guard decoded.count == PacketLayout.bitCount else { return nil }
         var word: UInt64 = 0
         for bit in decoded { word = (word << 1) | (bit ? 1 : 0) }

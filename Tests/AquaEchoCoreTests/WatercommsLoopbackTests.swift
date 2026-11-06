@@ -3,14 +3,14 @@ import XCTest
 
 final class WatercommsLoopbackTests: XCTestCase {
     func testWatercommsBaselineLayout() {
-        let set = try! XCTUnwrap(SpectralSet.set(id: "S0"))
-        XCTAssertEqual(set.carriers, Array(10...29))
+        let set = try! XCTUnwrap(SpectralSet.set(id: "C8"))
+        XCTAssertEqual(set.carriers, Array(32...39))
         let plan = WatercommsPhy.plan(for: set)
         XCTAssertEqual(plan.ns, 960)
         XCTAssertEqual(plan.cp, 67)
         XCTAssertEqual(plan.gap, 960)
         XCTAssertEqual(plan.preamble.count, 9_360)
-        XCTAssertEqual(plan.dataCounts, [19, 19, 18, 18, 18, 18, 18, 18])
+        XCTAssertEqual(plan.dataCounts, Array(repeating: 8, count: 13) + Array(repeating: 7, count: 6))
         let pn60 = Array("100000100001100010100111101000111001001011011101100110101011").map { $0 == "1" }
         XCTAssertEqual(plan.trainingBits, Array(pn60.prefix(set.carrierCount)))
 
@@ -24,12 +24,12 @@ final class WatercommsLoopbackTests: XCTestCase {
         XCTAssertEqual(ScanProtocol.makeFrame(payload: payload, set: set), frame)
     }
 
-    func testOldConfigResetsToE16AndS1() throws {
+    func testOldConfigResetsToC8AndA40() throws {
         let json = #"{"scenario":"air","distanceCm":30,"notes":"desk","packetsPerSet":20,"setIDs":["S0","S1"]}"#
         let decoded = try JSONDecoder().decode(ScanRunConfig.self, from: Data(json.utf8))
         let config = decoded.normalized
-        XCTAssertEqual(config.activeSets.map(\.id), ["E16", "S1"])
-        XCTAssertEqual(ScanRunConfig().normalized.activeSets.map(\.id), ["E16", "S1"])
+        XCTAssertEqual(config.activeSets.map(\.id), ["C8", "A40"])
+        XCTAssertEqual(ScanRunConfig().normalized.activeSets.map(\.id), ["C8", "A40"])
         XCTAssertEqual(config.distanceCm, 30)
         XCTAssertEqual(config.notes, "desk")
         XCTAssertEqual(config.packetsPerSet, 20)
@@ -49,8 +49,10 @@ final class WatercommsLoopbackTests: XCTestCase {
             XCTAssertLessThanOrEqual(set.highHz, 2_500, set.id)
             XCTAssertTrue(set.carriers.allSatisfy { (10...49).contains($0) }, "\(set.id) \(set.carriers)")
         }
-        XCTAssertEqual(SpectralSet.set(id: "A8")?.carrierCount, 8)
-        XCTAssertEqual(SpectralSet.set(id: "D16")?.carrierCount, 16)
+        XCTAssertEqual(SpectralSet.all.map(\.id), ["C8", "A40"])
+        XCTAssertEqual(SpectralSet.set(id: "C8")?.carrierCount, 8)
         XCTAssertEqual(SpectralSet.set(id: "A40")?.carrierCount, 40)
+        XCTAssertEqual(SpectralSet.set(id: "C8")?.code, 2)
+        XCTAssertEqual(SpectralSet.set(id: "A40")?.code, 7)
     }
 }

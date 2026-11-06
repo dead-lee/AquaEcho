@@ -1,7 +1,7 @@
 import Foundation
 
 /// 扫描测试用的差分 BPSK-OFDM 调制/解调。
-/// 只保留频域差分通路：训练符号做单抽头均衡，数据符号相对前一个符号解相位。
+/// 只保留频域差分通路：数据符号相对前一个符号解相位，第一个数据符号以训练符号为参考。
 enum OFDMConstants {
     static let noiseBinOffsets = [-8, -6, -4, 4, 6, 8]
     static let coarseHopMin = 8
@@ -34,7 +34,8 @@ enum OFDMModem {
     }
 
     struct Demodulated {
-        var bits: [Bool]
+        /// 去交织后的编码比特软值。大于 0 是 1，绝对值是可信度。
+        var soft: [Double]
         var readings: [SymbolReading]
     }
 
@@ -111,15 +112,12 @@ enum OFDMModem {
         let end = symbolStart + symbolCount * plan.symbolSamples
         guard symbolStart >= 0, end <= window.count else { return nil }
         guard let training = spectrum(window: window, bodyStart: symbolStart + plan.cp, plan: plan) else { return nil }
-        let weights = zip(plan.trainingBits, training.carriers).map { bit, bin in
-            weight(sign: bit ? -1 : 1, bin: bin)
-        }
-        var carriers: [[Bin]] = [zip(training.carriers, weights).map { multiply($0, $1) }]
+        var carriers: [[Bin]] = [training.carriers]
         var readings: [SymbolReading] = []
         for index in 0..<plan.dataCounts.count {
             let start = symbolStart + (index + 1) * plan.symbolSamples
             guard let spectrum = spectrum(window: window, bodyStart: start + plan.cp, plan: plan) else { return nil }
-            carriers.append(zip(spectrum.carriers, weights).map { multiply($0, $1) })
+            carriers.append(spectrum.carriers)
             readings.append(reading(signal: spectrum.carriers, noise: spectrum.noise))
         }
         return demodulateCarriers(carriers, readings: readings, plan: plan)
@@ -127,16 +125,20 @@ enum OFDMModem {
 
     private static func demodulateCarriers(_ carriers: [[Bin]], readings: [SymbolReading], plan: Plan) -> Demodulated? {
         guard carriers.count == plan.dataCounts.count + 1 else { return nil }
-        var previous = carriers[0]
-        var bits: [Bool] = []
-        bits.reserveCapacity(plan.dataCounts.reduce(0, +))
-        for (index, count) in plan.dataCounts.enumerated() {
-            let symbolBits = zip(carriers[index + 1], previous).map { isOne($0, previous: $1) }
-            bits.append(contentsOf: deinterleave(symbolBits, symbolIndex: index).prefix(count))
-            previous = carriers[index + 1]
+        var products: [[Double]] = []
+        for index in plan.dataCounts.indices {
+            products.append(zip(carriers[index + 1], carriers[index]).map { flipScore($0, previous: $1) })
         }
-        guard bits.count == plan.dataCounts.reduce(0, +), readings.count == plan.dataCounts.count else { return nil }
-        return Demodulated(bits: bits, readings: readings)
+        let total = products.joined().reduce(0) { $0 + abs($1) }
+        let scale = total > 1e-30 ? Double(products.joined().count) / total : 0
+        var soft: [Double] = []
+        soft.reserveCapacity(plan.dataCounts.reduce(0, +))
+        for (index, count) in plan.dataCounts.enumerated() {
+            let values = products[index].map { $0 * scale }
+            soft.append(contentsOf: deinterleave(values, symbolIndex: index).prefix(count))
+        }
+        guard soft.count == plan.dataCounts.reduce(0, +), readings.count == plan.dataCounts.count else { return nil }
+        return Demodulated(soft: soft, readings: readings)
     }
 
     private struct Bin {
@@ -189,30 +191,17 @@ enum OFDMModem {
         }
     }
 
-    private static func weight(sign: Double, bin: Bin) -> Bin {
-        let power = bin.power
-        guard power > 1e-18 else { return Bin(re: 0, im: 0) }
-        return Bin(re: sign * bin.re / power, im: -sign * bin.im / power)
-    }
-
-    private static func multiply(_ lhs: Bin, _ rhs: Bin) -> Bin {
-        Bin(
-            re: lhs.re * rhs.re - lhs.im * rhs.im,
-            im: lhs.re * rhs.im + lhs.im * rhs.re
-        )
-    }
-
     /// 每个数据符号用符号序号作为 java.util.Random 的种子做 Fisher-Yates 打乱。
     static func interleave(_ bits: [Bool], symbolIndex: Int) -> [Bool] {
         let order = interleaveOrder(count: bits.count, symbolIndex: symbolIndex)
         return order.map { bits[$0] }
     }
 
-    static func deinterleave(_ bits: [Bool], symbolIndex: Int) -> [Bool] {
-        let order = interleaveOrder(count: bits.count, symbolIndex: symbolIndex)
-        var restored = [Bool](repeating: false, count: bits.count)
-        for position in bits.indices {
-            restored[order[position]] = bits[position]
+    static func deinterleave<Value>(_ values: [Value], symbolIndex: Int) -> [Value] {
+        let order = interleaveOrder(count: values.count, symbolIndex: symbolIndex)
+        var restored = values
+        for position in values.indices {
+            restored[order[position]] = values[position]
         }
         return restored
     }
@@ -261,13 +250,9 @@ enum OFDMModem {
         }
     }
 
-    /// 相位落在 ±90° 以外视为两个符号不同，差分编码下这就是数据 1。
-    private static func isOne(_ current: Bin, previous: Bin) -> Bool {
-        let real = current.re * previous.re + current.im * previous.im
-        let imag = current.im * previous.re - current.re * previous.im
-        guard abs(real) > 1e-18 || abs(imag) > 1e-18 else { return false }
-        let phase = atan2(imag, real)
-        return phase >= .pi / 2 || phase <= -.pi / 2
+    /// 相邻符号乘积的实部取负：相位翻转（数据 1）为正。幅度随两路载波强度变化，陷落载波自然权重低。
+    private static func flipScore(_ current: Bin, previous: Bin) -> Double {
+        -(current.re * previous.re + current.im * previous.im)
     }
 
     private static func synthesize(bits: [Bool], carriers: [Int], ns: Int) -> [Float] {
