@@ -4,13 +4,13 @@ import XCTest
 /// 袋子和手的位置会让几路载波整段陷落。软判决让这些载波的乱比特几乎不计分。
 final class NotchedCarrierTests: XCTestCase {
     func testSoftViterbiSurvivesNotchedCarriers() {
-        let set = try! XCTUnwrap(SpectralSet.set(id: "A40"))
+        let set = try! XCTUnwrap(SpectralSet.set(id: "C8"))
         let payload = ScanPayload.make(setID: set.id, packetIndex: 7)
         let plan = WatercommsPhy.plan(for: set)
         var samples = WatercommsPhy.makeFrame(payload: payload, set: set) + [Float](repeating: 0, count: 2_000)
         let dataStart = plan.preamble.count + plan.gap
-        let notched = plan.carriers.filter { (25...29).contains($0) }
-        XCTAssertEqual(notched.count, 5)
+        let notched = plan.carriers.filter { (34...35).contains($0) }
+        XCTAssertEqual(notched.count, 2)
 
         for symbol in 0...plan.dataCounts.count {
             let body = dataStart + symbol * plan.symbolSamples + plan.cp

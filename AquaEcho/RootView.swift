@@ -304,7 +304,7 @@ private struct ConfigScreen: View {
                             }
                         }
                     }
-                    Text("一次扫 C8、A40，每组 20 包。这是空气和密封袋里通过率最高、又互补的两组差分 OFDM。")
+                    Text("一次扫 C8、C4，每组 20 包。C4 只用 C8 上半段的 4 个载波，每路更响，包更长。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -25,14 +25,14 @@ final class RecordingReplayTests: XCTestCase {
         }
     }
 
-    /// 配置顺序就是约定。C8 发完再发 A40，接收端只听当前这一包的前导。
+    /// 配置顺序就是约定。C8 发完再发 C4，两组前导相同，接收端只按当前这一包约定的载波解调。
     func testSequentialOverlappingBandsDoNotStealEachOther() {
         var config = ScanRunConfig()
-        config.setIDs = ["C8", "A40"]
+        config.setIDs = ["C8", "C4"]
         config.packetsPerSet = 2
         let receiver = ScanReceiver(config: config, startedAt: Date())
         var signal = [Float](repeating: 0, count: 4_000)
-        for id in ["C8", "A40"] {
+        for id in ["C8", "C4"] {
             let set = try! XCTUnwrap(SpectralSet.set(id: id))
             for index in 0..<2 {
                 let payload = ScanPayload.make(setID: set.id, packetIndex: index)
@@ -51,7 +51,7 @@ final class RecordingReplayTests: XCTestCase {
         let analysis = receiver.finish()
         XCTAssertEqual(analysis.overallPassed, 4)
         XCTAssertEqual(analysis.summaries.first { $0.setID == "C8" }?.passed, 2)
-        XCTAssertEqual(analysis.summaries.first { $0.setID == "A40" }?.passed, 2)
+        XCTAssertEqual(analysis.summaries.first { $0.setID == "C4" }?.passed, 2)
         XCTAssertEqual(analysis.corruptEvents, 0)
     }
 }

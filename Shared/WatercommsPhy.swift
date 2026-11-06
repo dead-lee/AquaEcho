@@ -2,7 +2,7 @@ import Foundation
 import Accelerate
 
 /// watercomms 对齐版 PHY：Naiser 结构前导 + 960 gap + 训练/数据符号，Ns=960、Cp=67。
-/// 实时集合的前导按自己的频段生成。
+/// 实时集合的前导按自己的前导频段生成。
 enum WatercommsPhy {
     static let ns = 960
     static let cp = 67
@@ -12,21 +12,21 @@ enum WatercommsPhy {
 
     private static let bandPreambles: [String: [Float]] = {
         Dictionary(uniqueKeysWithValues: SpectralSet.all.map { set in
-            let samples = (set.lowHz == 1_000 && set.highHz == 4_000)
+            let samples = (set.chirpLowHz == 1_000 && set.chirpHighHz == 4_000)
                 ? WatercommsPreamble.samples
-                : synthesizedPreamble(lowHz: set.lowHz, highHz: set.highHz)
+                : synthesizedPreamble(lowHz: set.chirpLowHz, highHz: set.chirpHighHz)
             return (set.id, samples)
         })
     }()
 
     static func preamble(for set: SpectralSet) -> [Float] {
-        bandPreambles[set.id] ?? synthesizedPreamble(lowHz: set.lowHz, highHz: set.highHz)
+        bandPreambles[set.id] ?? synthesizedPreamble(lowHz: set.chirpLowHz, highHz: set.chirpHighHz)
     }
 
-    /// watercomms 对 1–4 kHz 用 800–4000 Hz。通带是数据下沿减 200 Hz 到上沿。
+    /// watercomms 对 1–4 kHz 用 800–4000 Hz。通带是前导下沿减 200 Hz 到上沿。
     static func syncBand(for set: SpectralSet) -> (lowHz: Double, highHz: Double) {
-        let low = max(50, set.lowHz - 200)
-        let high = min(ScanProtocol.sampleRate / 2 - 100, set.highHz)
+        let low = max(50, set.chirpLowHz - 200)
+        let high = min(ScanProtocol.sampleRate / 2 - 100, set.chirpHighHz)
         return (low, high)
     }
 

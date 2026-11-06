@@ -41,7 +41,7 @@ final class FrameStartTests: XCTestCase {
     }
 
     func testReceivedSoundDecodesWithoutWatchState() {
-        let set = try! XCTUnwrap(SpectralSet.set(id: "A40"))
+        let set = try! XCTUnwrap(SpectralSet.set(id: "C4"))
         var config = ScanRunConfig()
         config.setIDs = [set.id]
         config.packetsPerSet = 1
