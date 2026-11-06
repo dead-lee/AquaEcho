@@ -34,8 +34,8 @@ enum TestScenario: String, CaseIterable, Codable, Identifiable {
 }
 
 struct ScanRunConfig: Codable, Equatable {
-    /// 1 是只有 S0–S6 的旧配置。2 起首次打开时把目录里的全部频段都选上。
-    static let currentCatalogVersion = 2
+    /// 1 是只有 S0–S6。2 把当时目录里的集合都打开。3 换成 0.5–2.5 kHz 的 OFDM 组合和单音 FSK。4 只默认打开 E16、S1、A40。5 默认改成五组单音频率对。6 放弃单音，默认回到 E16、S1。
+    static let currentCatalogVersion = 6
 
     var scenario: TestScenario = .air
     var distanceCm: Double = 1

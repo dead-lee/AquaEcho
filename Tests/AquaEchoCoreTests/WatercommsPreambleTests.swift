@@ -23,14 +23,13 @@ final class WatercommsPreambleTests: XCTestCase {
         XCTAssertEqual(WatercommsPhy.decode(samples: signal, start: starts.first!, set: set), payload)
     }
 
-    func testW0KeepsTheOriginalNaiserAndOtherBandsDiffer() {
-        let w0 = try! XCTUnwrap(SpectralSet.set(id: "W0"))
-        XCTAssertEqual(WatercommsPhy.preamble(for: w0), WatercommsPreamble.samples)
-        let s3 = try! XCTUnwrap(SpectralSet.set(id: "S3"))
-        let other = WatercommsPhy.preamble(for: s3)
+    func testSeparatedBandsDoNotShareAPreamble() {
+        let low = try! XCTUnwrap(SpectralSet.set(id: "A8"))
+        let high = try! XCTUnwrap(SpectralSet.set(id: "C8"))
+        let other = WatercommsPhy.preamble(for: high)
         XCTAssertEqual(other.count, 9_360)
-        let scores = WatercommsPhy.preambleScores(in: other, kernel: WatercommsPreamble.samples)
+        let scores = WatercommsPhy.preambleScores(in: other, kernel: WatercommsPhy.preamble(for: low))
         let peak = scores.max() ?? 1
-        XCTAssertLessThan(peak, 0.2, "4–8 kHz 前导不应再撞上 1–4 kHz 模板，峰=\(peak)")
+        XCTAssertLessThan(peak, 0.2, "0.5–0.9 kHz 与 1.6–2.0 kHz 前导不应撞上，峰=\(peak)")
     }
 }

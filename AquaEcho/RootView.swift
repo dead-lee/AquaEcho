@@ -304,7 +304,7 @@ private struct ConfigScreen: View {
                             }
                         }
                     }
-                    Text("默认一次扫完全部频段，每组 20 包。W0 是 watercomms 原版 1–4 kHz，S0–S6 只改频段。")
+                    Text("默认一次扫 E16、S1，每组 20 包。这是空气里通过率最高的两组差分 OFDM。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

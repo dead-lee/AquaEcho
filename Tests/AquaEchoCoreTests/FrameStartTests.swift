@@ -1,7 +1,7 @@
 import XCTest
 @testable import AquaEchoCore
 
-final class ChannelLookbackTests: XCTestCase {
+final class FrameStartTests: XCTestCase {
     func testSyncBandpassKeepsThePreambleLag() {
         let preamble = WatercommsPreamble.samples
         let start = 2_000
@@ -15,26 +15,29 @@ final class ChannelLookbackTests: XCTestCase {
         XCTAssertGreaterThan(peak?.element ?? 0, 0.8)
     }
 
-    func testLateCorrelationPeakIsPulledBackToTheFrame() {
-        let set = try! XCTUnwrap(SpectralSet.set(id: "S2"))
-        let payload = ScanPayload.make(setID: set.id, packetIndex: 4)
-        let frame = WatercommsPhy.makeFrame(payload: payload, set: set)
-        let trueStart = 2_000
-        var samples = [Float](repeating: 0, count: trueStart + frame.count + 2_000)
-        samples.replaceSubrange(trueStart..<(trueStart + frame.count), with: frame)
+    /// 400 Hz 宽的 C8 上，watercomms 的最早径会落到主瓣前的旁瓣，早 168 点。seekback 约早 80 点，仍能解出。
+    func testNarrowBandFrameStartUsesSeekback() {
+        let set = try! XCTUnwrap(SpectralSet.set(id: "C8"))
+        var config = ScanRunConfig()
+        config.setIDs = [set.id]
+        config.packetsPerSet = 1
+        let payload = ScanPayload.make(setID: set.id, packetIndex: 0)
+        let trueStart = 3_000
+        var generator = SystemRandomNumberGenerator()
+        var signal = (0..<(trueStart + ScanProtocol.frameSamples(for: set) + 3_000)).map { _ in
+            Float.random(in: -0.003...0.003, using: &generator)
+        }
+        for (index, value) in ScanProtocol.makeFrame(payload: payload, set: set).enumerated() {
+            signal[trueStart + index] += value
+        }
 
-        let late = trueStart + 112
-        let template = WatercommsPhy.preamble(for: set)
-        let start = WatercommsPhy.channelLookbackStart(
-            samples: samples, seekbackLag: late, preamble: template, lowHz: set.lowHz, highHz: set.highHz
-        )
-        XCTAssertLessThan(abs(start - trueStart), abs(late - trueStart), "lookback=\(start) late=\(late) true=\(trueStart)")
-        XCTAssertEqual(WatercommsPhy.decode(samples: samples, start: start, set: set), payload)
+        let receiver = ScanReceiver(config: config, startedAt: Date())
+        receiver.ingest(signal, at: Date(), sampleRate: 48_000)
+        let analysis = receiver.finish()
 
-        let aligned = WatercommsPhy.channelLookbackStart(
-            samples: samples, seekbackLag: trueStart, preamble: template, lowHz: set.lowHz, highHz: set.highHz
-        )
-        XCTAssertLessThanOrEqual(abs(aligned - trueStart), WatercommsPhy.cp, "aligned=\(aligned)")
+        XCTAssertEqual(analysis.overallPassed, 1)
+        let frameSample = try! XCTUnwrap(analysis.packets.first { $0.passed }?.frameSample)
+        XCTAssertLessThanOrEqual(abs(frameSample - trueStart), 100, "frameSample=\(frameSample)")
     }
 
     func testReceivedSoundDecodesWithoutWatchState() {

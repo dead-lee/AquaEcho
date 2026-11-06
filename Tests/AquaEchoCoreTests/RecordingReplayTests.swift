@@ -25,14 +25,14 @@ final class RecordingReplayTests: XCTestCase {
         }
     }
 
-    /// 8 个集合同时开着。S0 和 S4 频段重叠，但仍按发送顺序各解各的包。
+    /// 配置顺序就是约定。S0 发完再发 S1，接收端只听当前这一包的前导。
     func testSequentialOverlappingBandsDoNotStealEachOther() {
         var config = ScanRunConfig()
-        config.setIDs = SpectralSet.all.map(\.id)
+        config.setIDs = ["S0", "S1"]
         config.packetsPerSet = 2
         let receiver = ScanReceiver(config: config, startedAt: Date())
         var signal = [Float](repeating: 0, count: 4_000)
-        for id in ["S0", "S4"] {
+        for id in ["S0", "S1"] {
             let set = try! XCTUnwrap(SpectralSet.set(id: id))
             for index in 0..<2 {
                 let payload = ScanPayload.make(setID: set.id, packetIndex: index)
@@ -51,7 +51,7 @@ final class RecordingReplayTests: XCTestCase {
         let analysis = receiver.finish()
         XCTAssertEqual(analysis.overallPassed, 4)
         XCTAssertEqual(analysis.summaries.first { $0.setID == "S0" }?.passed, 2)
-        XCTAssertEqual(analysis.summaries.first { $0.setID == "S4" }?.passed, 2)
+        XCTAssertEqual(analysis.summaries.first { $0.setID == "S1" }?.passed, 2)
         XCTAssertEqual(analysis.corruptEvents, 0)
     }
 }
