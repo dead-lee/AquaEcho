@@ -103,14 +103,20 @@ private struct TestScreen: View {
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
                     } else {
-                        Button("开始测试") {
-                            Task { await model.startTest() }
+                        HStack {
+                            Button("开始测试") {
+                                Task { await model.startTest() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button("只监听") {
+                                Task { await model.startListening() }
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.borderedProminent)
                         .controlSize(.large)
                         .disabled(model.isAnalyzing)
                     }
-                    Text("手机会请求手表同时开始扫描；收到与该集合同频段的前导后实时解码，结果随包更新。停止后保存 WAV/CSV。")
+                    Text("“开始测试”会请求手表同时开始扫描。水下用“只监听”：手机只录音，手表在水面按“延时 15 秒开始”后入水。收到前导后实时解码，结果随包更新。停止后保存 WAV/CSV。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

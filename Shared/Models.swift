@@ -10,6 +10,8 @@ enum WCKind: String, Codable {
     case workoutEnded
     case finished
     case log
+    /// 手表按了“延时开始”，`startAt` 是开始发送的时刻。
+    case countdown
 }
 
 /// WatchConnectivity 只承载两件事：水面同步场景配置、回传手表日志。
@@ -18,6 +20,7 @@ struct WCEnvelope: Codable {
     var kind: WCKind
     var scanConfig: ScanRunConfig? = nil
     var log: String? = nil
+    var startAt: Date? = nil
 }
 
 enum WCCodec {

@@ -41,6 +41,10 @@ final class WatchInterfaceController: WKInterfaceController {
         super.didDeactivate()
     }
 
+    @IBAction private func startDelayed() {
+        model.requestDelayedStart()
+    }
+
     @IBAction private func focusVolume() {
         volumeControl.focus()
         print("Stage3 volume focus requested by button")

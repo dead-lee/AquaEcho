@@ -185,6 +185,11 @@ final class PhoneModel: ObservableObject {
         await startRecording()
     }
 
+    /// 水下测试：只开录音，不发 start。手表在水面按“延时开始”。
+    func startListening() async {
+        await startRecording(sendStartToWatch: false)
+    }
+
     func stopTest() {
         if isRecording {
             let queued = link.send(WCEnvelope(kind: .stop))
@@ -193,7 +198,7 @@ final class PhoneModel: ObservableObject {
         stopAndAnalyze()
     }
 
-    func startRecording() async {
+    func startRecording(sendStartToWatch: Bool = true) async {
         guard !isRecording, !isAnalyzing, startAdmission.tryBegin() else {
             log("忽略重复开始：recording=\(isRecording), analyzing=\(isAnalyzing), starting=\(startAdmission.isActive)")
             return
@@ -254,7 +259,13 @@ final class PhoneModel: ObservableObject {
         log("开始录音 \(config.label) 集合=\(config.activeSets.map(\.id).joined(separator: ",")) 预计包=\(expectedPackets) 预计=\(String(format: "%.1f", expectedSeconds))s 构建=\(AppBuild.number)")
         log("录音链路[\(capture.diagnostics)]")
 
-        sendStart(reason: "userStart")
+        if sendStartToWatch {
+            sendStart(reason: "userStart")
+        } else {
+            let sent = link.send(WCEnvelope(kind: .config, scanConfig: config))
+            log("只监听：不发 start，配置同步到手表 结果=\(sent ? "成功" : "失败")（reachable=\(reachable)）")
+            status = "只监听中。请在手表上按“延时 15 秒开始”，再入水。"
+        }
 
         maxTask?.cancel()
         maxTask = Task { @MainActor [weak self] in
@@ -461,6 +472,15 @@ final class PhoneModel: ObservableObject {
                 log("收到手表扫描完成消息，自动停止并分析")
                 stopAndAnalyze()
             }
+        case .countdown:
+            guard let startAt = envelope.startAt else { return }
+            let seconds = startAt.timeIntervalSinceNow - 1
+            log("收到手表延时开始 开始时刻=\(RunLog.timestamp(startAt)) 剩余=\(String(format: "%.1f", seconds + 1))s（recording=\(isRecording)）")
+            guard isRecording, let receiver else { return }
+            demodQueue.async {
+                receiver.ignorePreambles(forSeconds: seconds)
+            }
+            status = "手表倒计时中，\(Int(max(0, seconds + 1).rounded())) 秒后开始发。"
         case .log:
             if let line = envelope.log {
                 for part in line.split(separator: "\n", omittingEmptySubsequences: true) {

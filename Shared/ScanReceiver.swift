@@ -38,6 +38,8 @@ final class ScanReceiver {
     private var lastEventAbs: Int?
     /// 已经收下的那一包播完之前，后面的峰是旁瓣或正文，不是下一包。用那一包自己的帧长。
     private var blockedUntil = 0
+    /// 手表倒计时结束前的峰是入水、拍水的假峰，不算包。
+    private var ignoredBefore = 0
     private var scheduleStarted = false
     private var results: [String: ScanPacketResult] = [:]
     private var corruptEvents = 0
@@ -60,6 +62,16 @@ final class ScanReceiver {
         cancelLock.lock()
         canceled = true
         cancelLock.unlock()
+    }
+
+    /// 从已收到音频的末尾起，`seconds` 秒内的前导峰只记日志，不解调、不推进约定顺序。
+    func ignorePreambles(forSeconds seconds: Double) {
+        lock.lock()
+        let rate = sampleRate > 0 ? sampleRate : 48_000
+        ignoredBefore = windowStart + window.count + Int((max(0, seconds) * rate).rounded())
+        let until = ignoredBefore
+        lock.unlock()
+        onLog?("倒计时门限 忽略样本<\(until)")
     }
 
     private var isCanceled: Bool {
@@ -162,6 +174,14 @@ final class ScanReceiver {
     /// 同一条前导的旁瓣和主峰相距约 7200 点。先按住，窗口里出现更高的峰再换。
     /// 这一帧结束前出现的峰是旁瓣，不是下一包。
     private func consider(_ peak: CandidatePeak, logs: inout [String]) {
+        if peak.absLag < ignoredBefore {
+            logs.append(String(
+                format: "倒计时内忽略 集合=%@ 样本=%d 相关=%.3f",
+                locale: Locale(identifier: "en_US_POSIX"),
+                sets[peak.setIndex].id, peak.absLag, peak.score
+            ))
+            return
+        }
         if tooEarly(peak) { return }
         if let held, abs(peak.seekLag - held.seekLag) < minPeakDistance {
             guard peak.score > held.score else { return }

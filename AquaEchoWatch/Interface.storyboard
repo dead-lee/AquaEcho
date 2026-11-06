@@ -9,6 +9,12 @@
                 <controller id="watch-controller" customClass="WatchInterfaceController" customModule="AquaEchoWatch" customModuleProvider="target">
                     <items>
                         <label id="title-label" text="AquaEcho" alignment="left" textAlignment="left" numberOfLines="0"/>
+                        <button id="delayed-start-button" title="延时 15 秒开始">
+                            <connections>
+                                <action selector="startDelayed" destination="watch-controller" eventType="touchUpInside" id="a-start-delayed"/>
+                            </connections>
+                        </button>
+                        <label id="delayed-start-hint" text="水下用：手机先点“只监听”，再按这里，15 秒内入水并保持静止。" alignment="left" textAlignment="left" numberOfLines="0"/>
                         <volumeControlView id="volume-control" origin="local"/>
                         <button id="volume-focus-button" title="调节音量">
                             <connections>

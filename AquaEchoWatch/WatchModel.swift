@@ -127,7 +127,11 @@ final class WatchModel: ObservableObject {
     var sets: [SpectralSet] { config.activeSets }
     var totalPackets: Int { sets.count * packetsPerSet }
 
-    func start() {
+    /// 水面按下后过多久开始发。入水后屏幕被防水锁锁住，只能靠倒计时。
+    static let manualStartDelay: TimeInterval = 15
+
+    /// `startAt` 不为空时，workout 和播放器在水面准备好，到点再发第一包。
+    func start(at startAt: Date? = nil) {
         if isRunning {
             log("收到 start：当前轮仍在运行，先停止并重启")
             stop()
@@ -167,6 +171,15 @@ final class WatchModel: ObservableObject {
                 self.log("错误 播放器启动失败 \(error.localizedDescription)")
                 self.isRunning = false
                 return
+            }
+            if let startAt {
+                while true {
+                    let remaining = startAt.timeIntervalSinceNow
+                    if remaining <= 0 { break }
+                    self.status = "倒计时 \(Int(remaining.rounded(.up))) 秒：入水后保持静止"
+                    try? await Task.sleep(nanoseconds: UInt64(min(remaining, 0.5) * 1_000_000_000))
+                    if self.stopRequested || Task.isCancelled { return }
+                }
             }
             self.log("开始扫描 \(self.config.label) 集合=\(self.sets.map(\.id).joined(separator: ",")) 每组=\(self.packetsPerSet) 总包=\(self.totalPackets) 系统音量=\(String(format: "%.2f", self.outputVolume))")
             await self.run()
@@ -232,11 +245,16 @@ final class WatchModel: ObservableObject {
         volumeTask?.cancel()
     }
 
-    /// 手表上手动开始扫描；手机可以稍后再开始录音。
-    func requestStart() {
-        guard !isRunning else { return }
-        log("手表手动开始；请确认手机已开始录音")
-        start()
+    /// 水下测试：手机先“只监听”，手表在水面按下，倒计时结束后按当前配置发。
+    func requestDelayedStart() {
+        guard !isRunning else {
+            log("延时开始被忽略：当前轮仍在运行")
+            return
+        }
+        let startAt = Date().addingTimeInterval(Self.manualStartDelay)
+        let sent = link.send(WCEnvelope(kind: .countdown, startAt: startAt))
+        log("手表延时开始 开始时刻=\(RunLog.timestamp(startAt)) 通知手机=\(sent ? "已发送/排队" : "失败") \(config.label)")
+        start(at: startAt)
     }
 
     func stop(reason: String) {
@@ -379,7 +397,7 @@ final class WatchModel: ObservableObject {
         case .endWorkout:
             log("收到手机结束 workout 指令")
             endForeground()
-        case .volumeLow, .ready, .workoutEnded, .finished:
+        case .volumeLow, .ready, .workoutEnded, .finished, .countdown:
             break
         case .log:
             break
